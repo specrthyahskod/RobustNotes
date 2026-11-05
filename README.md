@@ -26,6 +26,10 @@ Annotate notebook pages with pen, highlighter, laser, shape, lasso, scale, and c
 
 ![RobustNotes notebook editor](docs/screenshots/notebook-editor.png)
 
+### Short product demo
+
+[Watch the 16-second beta demo](docs/demo-video.mp4). It uses fictional sample notes to show the notebook, editable cursive-style OCR review, and search finding saved OCR text.
+
 ## What makes RobustNotes distinctive
 
 RobustNotes is designed around a particular combination of workflows:
@@ -58,7 +62,7 @@ These are RobustNotes' product priorities and the way its features are put toget
 - Freehand shape snapping for common geometric sketches.
 - On-canvas calculator, scale/ruler, and compass.
 - Import PDF pages into a notebook, annotate them, and export notebooks as PDFs or individual pages as PNG images.
-- Recognize handwriting with the optional local TrOCR-based OCR stack. Review and edit recognized text before keeping it as page context.
+- Recognize handwriting with the optional local TrOCR-based OCR stack. Review and edit the transcription in a cursive-style preview before saving it as searchable page context.
 - Create cloze-style study cards from selected pages with PDF or recognized text.
 - Focus mode hides the editor chrome. Theme choices include a high-contrast option.
 - Zoom starts at 84%; type a zoom value or use the lower-corner zoom controls.
@@ -68,7 +72,9 @@ These are RobustNotes' product priorities and the way its features are put toget
 - Toggle the page-aware AI sidebar open or closed.
 - Ask questions using the current page image and any available imported PDF or OCR text.
 - Optional voice input converts speech to text locally when the speech-recognition dependencies are installed.
-- Connect to a Navidrome server through the Subsonic API for in-app music streaming.
+- Search and stream tracks from a connected [Funkwhale](https://funkwhale.audio/) pod in the embedded music panel. Funkwhale is open-source, self-hosted, and federated; the app connects through the pod's Subsonic-compatible API.
+
+**Music setup and privacy:** open the workspace overflow menu, choose **Open music player**, then select **Connect**. Enter your Funkwhale pod URL and username, and paste a Subsonic API password generated in your Funkwhale account settings. RobustNotes sends search and playback requests directly to that pod. The API password stays in memory for the current player session; the pod URL and username are saved locally. You need an account on a Funkwhale pod with playable music in its library; RobustNotes does not provide or host a music catalog. Funkwhale does not grant a blanket license to music stored on a pod; each track's rights depend on its uploader and license. Funkwhale's [Subsonic API documentation](https://docs.funkwhale.audio/developer/api/subsonic.html) lists the endpoints used by the player.
 
 **AI integration status:** the current desktop chat adapter expects a locally hosted Ollama-compatible chat endpoint (configurable in the app or with `ROBUSTNOTES_OLLAMA_URL` and `ROBUSTNOTES_MODEL`). RobustNotes' own trained SLM and its runtime are not included in this repository yet; connecting that model is future integration work.
 

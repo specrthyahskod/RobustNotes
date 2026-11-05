@@ -12,7 +12,6 @@ import re
 import sys
 import secrets
 import shutil
-import ssl
 import tempfile
 import threading
 import urllib.error
@@ -33,11 +32,13 @@ from PySide6.QtGui import (
     QKeySequence,
     QPainter,
     QPainterPath,
+    QMouseEvent,
     QPen,
     QPixmap,
     QPolygonF,
     QShortcut,
     QImage,
+    QFont,
     QIntValidator,
     QPdfWriter,
     QPageSize,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QDialog,
+    QDialogButtonBox,
     QFrame,
     QFileDialog,
     QGraphicsItem,
@@ -234,6 +236,77 @@ _TROCR_MODEL: Any = None
 _TROCR_LOCK = threading.Lock()
 
 
+def normalize_ocr_text(text: str) -> str:
+    """Tidy OCR spacing while preserving words, punctuation, and paragraph breaks."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[\t ]+", " ", line).strip() for line in normalized.split("\n")]
+    normalized = "\n".join(lines)
+    normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
+    normalized = re.sub(r"([,;:])(?=\S)", r"\1 ", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
+def extract_handwriting_line_crops(image_png: bytes):
+    """Split a page image into top-to-bottom ink bands without fragmenting cursive words."""
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    raw_image = cv2.imdecode(np.frombuffer(image_png, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if raw_image is None:
+        raise RuntimeError("The current page could not be prepared for handwriting recognition.")
+    gray = cv2.cvtColor(raw_image, cv2.COLOR_BGR2GRAY)
+    threshold_mode = cv2.THRESH_BINARY if float(np.mean(gray)) < 128 else cv2.THRESH_BINARY_INV
+    binary = cv2.threshold(gray, 0, 255, threshold_mode | cv2.THRESH_OTSU)[1]
+    component_count, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+    valid_components = [
+        component_id
+        for component_id in range(1, component_count)
+        if 5 <= int(component_stats[component_id, cv2.CC_STAT_AREA]) <= raw_image.shape[0] * raw_image.shape[1] * 0.25
+        and int(component_stats[component_id, cv2.CC_STAT_WIDTH]) >= 2
+        and int(component_stats[component_id, cv2.CC_STAT_HEIGHT]) >= 2
+    ]
+    binary = (np.isin(component_labels, valid_components).astype(np.uint8) * 255)
+    ink_rows = np.count_nonzero(binary, axis=1)
+    active_rows = np.flatnonzero(ink_rows >= max(1, raw_image.shape[1] // 2500))
+    if active_rows.size == 0:
+        raise RuntimeError("No handwriting was detected on this page.")
+
+    height, width = gray.shape
+    max_row_gap = max(10, min(26, round(height * 0.018)))
+    bands: list[tuple[int, int]] = []
+    top = previous = int(active_rows[0])
+    for row in active_rows[1:]:
+        row = int(row)
+        if row - previous > max_row_gap:
+            bands.append((top, previous + 1))
+            top = row
+        previous = row
+    bands.append((top, previous + 1))
+
+    crops = []
+    for top, bottom in bands:
+        if bottom - top < 8 or int(ink_rows[top:bottom].sum()) < 16:
+            continue
+        ys, xs = np.nonzero(binary[top:bottom])
+        if xs.size == 0:
+            continue
+        left = max(0, int(xs.min()) - 18)
+        right = min(width, int(xs.max()) + 19)
+        crop_top = max(0, top - 16)
+        crop_bottom = min(height, bottom + 16)
+        if right - left >= 12 and crop_bottom - crop_top >= 8:
+            crops.append(
+                Image.fromarray(cv2.cvtColor(raw_image[crop_top:crop_bottom, left:right], cv2.COLOR_BGR2RGB))
+            )
+    if not crops:
+        raise RuntimeError("No readable handwriting lines were found.")
+    return crops
+
+
 class HandwritingOCRWorker(QThread):
     """Detect handwriting lines and transcribe them with the local TrOCR model."""
 
@@ -253,56 +326,9 @@ class HandwritingOCRWorker(QThread):
                 QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
             )
             os.environ.setdefault("HF_HOME", str(local_app_data / "Models" / "huggingface"))
-            import cv2
-            import numpy as np
             import torch
-            from PIL import Image
             from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-
-            raw_image = cv2.imdecode(np.frombuffer(self.image_png, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if raw_image is None:
-                raise RuntimeError("The current page could not be prepared for handwriting recognition.")
-            gray = cv2.cvtColor(raw_image, cv2.COLOR_BGR2GRAY)
-            threshold_mode = cv2.THRESH_BINARY if float(np.mean(gray)) < 128 else cv2.THRESH_BINARY_INV
-            binary = cv2.threshold(gray, 0, 255, threshold_mode | cv2.THRESH_OTSU)[1]
-            count, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-            height, width = gray.shape
-            components: list[tuple[int, int, int, int]] = []
-            for component_id in range(1, count):
-                x, y, box_width, box_height, area = (int(value) for value in stats[component_id])
-                if area < 5 or area > width * height * 0.25 or box_width < 2 or box_height < 2:
-                    continue
-                components.append((x, y, x + box_width, y + box_height))
-            if not components:
-                raise RuntimeError("No handwriting was detected on this page.")
-
-            components.sort(key=lambda box: (box[1] + box[3]) / 2)
-            lines: list[list[tuple[int, int, int, int]]] = []
-            for box in components:
-                center_y = (box[1] + box[3]) / 2
-                if not lines:
-                    lines.append([box])
-                    continue
-                active_line = lines[-1]
-                top = min(part[1] for part in active_line)
-                bottom = max(part[3] for part in active_line)
-                line_center = (top + bottom) / 2
-                line_height = bottom - top
-                if abs(center_y - line_center) <= max(16, line_height * 0.7):
-                    active_line.append(box)
-                else:
-                    lines.append([box])
-
-            crops: list[Image.Image] = []
-            for line in lines:
-                left = max(0, min(part[0] for part in line) - 14)
-                top = max(0, min(part[1] for part in line) - 12)
-                right = min(width, max(part[2] for part in line) + 14)
-                bottom = min(height, max(part[3] for part in line) + 12)
-                if right - left >= 12 and bottom - top >= 8:
-                    crops.append(Image.fromarray(cv2.cvtColor(raw_image[top:bottom, left:right], cv2.COLOR_BGR2RGB)))
-            if not crops:
-                raise RuntimeError("No readable handwriting lines were found.")
+            crops = extract_handwriting_line_crops(self.image_png)
 
             self.progress.emit("Loading local handwriting model (first run may download it)…")
             model_name = "microsoft/trocr-base-handwritten"
@@ -320,7 +346,7 @@ class HandwritingOCRWorker(QThread):
                     with torch.inference_mode():
                         output = _TROCR_MODEL.generate(inputs, max_new_tokens=128)
                     recognized_lines.extend(_TROCR_PROCESSOR.batch_decode(output, skip_special_tokens=True))
-            result = "\n".join(line.strip() for line in recognized_lines if line.strip()).strip()
+            result = normalize_ocr_text("\n".join(recognized_lines))
             if not result:
                 raise RuntimeError("The model could not read the handwriting on this page.")
             self.recognized.emit(result)
@@ -333,142 +359,146 @@ class HandwritingOCRWorker(QThread):
             self.failed.emit(f"Handwriting recognition failed: {error}")
 
 
-class NavidromeRequestWorker(QThread):
-    """Small Subsonic v1 client for library search and connection checks."""
+class FunkwhaleMusicRequestWorker(QThread):
+    """Search and stream tracks from a user-configured Funkwhale pod."""
 
     completed = Signal(str, object)
     failed = Signal(str, str)
 
-    def __init__(self, server: str, username: str, password: str, operation: str,
-                 query: str = "", allow_local_self_signed: bool = False):
+    def __init__(self, operation: str, server_url: str, username: str, password: str,
+                 query: str = "", track_id: str = ""):
         super().__init__()
-        self.server = server.rstrip("/")
+        self.operation = operation
+        self.server_url = server_url.rstrip("/")
         self.username = username
         self.password = password
-        self.operation = operation
         self.query = query
-        self.allow_local_self_signed = allow_local_self_signed
+        self.track_id = track_id
+
+    def _request_url(self, endpoint: str, params: dict[str, str]) -> str:
+        salt = secrets.token_hex(8)
+        token = hashlib.md5((self.password + salt).encode("utf-8")).hexdigest()
+        auth = {
+            "u": self.username, "t": token, "s": salt,
+            "v": "1.16.1", "c": "RobustNotes", "f": "json",
+        }
+        return f"{self.server_url}/rest/{endpoint}.view?{urlencode(auth | params)}"
+
+    def _api_json(self, endpoint: str, params: dict[str, str]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            self._request_url(endpoint, params),
+            headers={"User-Agent": "RobustNotes/1.0", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=18) as response:
+            payload = json.loads(response.read(2_000_001).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeError("The Funkwhale server returned an unexpected response.")
+        envelope = payload.get("subsonic-response")
+        if not isinstance(envelope, dict):
+            raise RuntimeError("The server did not return a Subsonic response. Check the pod URL.")
+        if envelope.get("status") != "ok":
+            detail = envelope.get("error")
+            message = detail.get("message") if isinstance(detail, dict) else None
+            raise RuntimeError(str(message or "The server rejected the request."))
+        return envelope
 
     def run(self) -> None:
-        parsed = urlparse(self.server)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            self.failed.emit(self.operation, "Enter a valid Navidrome http:// or https:// server URL.")
+        parsed_server = urlparse(self.server_url)
+        if (parsed_server.scheme not in {"https", "http"} or not parsed_server.hostname
+                or (parsed_server.scheme != "https" and parsed_server.hostname not in {"localhost", "127.0.0.1", "::1"})):
+            self.failed.emit(self.operation, "Enter a valid HTTPS Funkwhale pod address (HTTP is allowed for localhost).")
             return
-        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-            self.failed.emit(self.operation, "Use HTTPS when connecting to a Navidrome server outside this device.")
+        if not self.username.strip() or not self.password:
+            self.failed.emit(self.operation, "Configure your Funkwhale username and Subsonic API password first.")
             return
-        salt = secrets.token_hex(12)
-        token = hashlib.md5((self.password + salt).encode("utf-8")).hexdigest()
-        params = {
-            "u": self.username,
-            "t": token,
-            "s": salt,
-            "v": "1.16.1",
-            "c": "RobustNotes",
-            "f": "json",
-        }
-        endpoint = "ping.view"
         if self.operation == "search":
-            endpoint = "search3.view"
-            params.update({"query": self.query, "songCount": "50", "albumCount": "0", "artistCount": "0"})
-        request = urllib.request.Request(
-            f"{self.server}/rest/{endpoint}?{urlencode(params)}",
-            headers={"User-Agent": "RobustNotes/1.0"},
-        )
-        context = ssl.create_default_context()
-        if (self.allow_local_self_signed and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-                and parsed.scheme == "https"):
-            context = ssl._create_unverified_context()
+            if not self.query.strip():
+                self.failed.emit(self.operation, "Enter a song, artist, or album to search for.")
+                return
+            params = {"query": self.query.strip(), "songCount": "50", "songOffset": "0",
+                      "albumCount": "0", "artistCount": "0"}
+        elif self.operation == "stream":
+            if not self.track_id.strip():
+                self.failed.emit(self.operation, "Select a track to play.")
+                return
+            params = {"id": self.track_id}
+        else:
+            params = {}
         try:
-            with urllib.request.urlopen(request, timeout=25, context=context) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            result = payload.get("subsonic-response", {})
-            if result.get("status") != "ok":
-                detail = result.get("error", {}).get("message", "Navidrome rejected the request.")
-                raise RuntimeError(str(detail))
-            if self.operation == "search":
-                songs = result.get("searchResult3", {}).get("song", [])
+            if self.operation == "ping":
+                self._api_json("ping", {})
+                self.completed.emit(self.operation, {})
+            elif self.operation == "search":
+                envelope = self._api_json("search3", params)
+                result = envelope.get("searchResult3", {})
+                songs = result.get("song", []) if isinstance(result, dict) else []
                 if isinstance(songs, dict):
                     songs = [songs]
-                self.completed.emit(self.operation, songs if isinstance(songs, list) else [])
+                tracks = []
+                for song in songs if isinstance(songs, list) else []:
+                    if isinstance(song, dict) and song.get("id"):
+                        tracks.append({
+                            "id": str(song["id"]), "name": str(song.get("title") or "Untitled"),
+                            "artist": str(song.get("artist") or "Unknown artist"),
+                            "album": str(song.get("album") or ""),
+                        })
+                self.completed.emit(self.operation, tracks)
             else:
-                self.completed.emit(self.operation, result)
+                self._api_json("getSong", params)
+                self.completed.emit(self.operation, {"url": self._request_url("stream", params)})
         except Exception as error:
             self.failed.emit(self.operation, str(error))
 
 
-class NavidromePlayerDialog(QDialog):
-    """Embedded search and playback surface for a Navidrome library."""
+class FunkwhaleMusicPlayerDialog(QDialog):
+    """Embedded player for a user-owned or community Funkwhale pod."""
 
     def __init__(self, parent, settings: QSettings):
         super().__init__(parent)
         self.settings = settings
-        self.password = ""  # Intentionally session-only; never write it to QSettings.
-        self.worker: Optional[NavidromeRequestWorker] = None
-        self.connected = False
+        self.worker: Optional[FunkwhaleMusicRequestWorker] = None
+        self.pending_track: Optional[dict[str, Any]] = None
+        self.server_url = str(settings.value("funkwhaleServer", "https://demo.funkwhale.audio"))
+        self.username = str(settings.value("funkwhaleUsername", ""))
+        # Keep the Subsonic API password in memory only; it is not written to QSettings.
+        self.password = ""
         self.setWindowTitle("RobustNotes · Music")
-        self.setMinimumSize(680, 590)
-        self.resize(760, 680)
+        self.setMinimumSize(650, 540)
+        self.resize(740, 630)
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 20)
         root.setSpacing(12)
 
         header = QHBoxLayout()
-        title = QLabel("Music library")
+        title = QLabel("Music")
         title.setObjectName("Brand")
         header.addWidget(title)
         header.addStretch(1)
-        self.connection_status = QLabel("Connect to Navidrome")
+        self.connection_status = QLabel("Ready to search")
         self.connection_status.setObjectName("Muted")
         header.addWidget(self.connection_status)
+        self.configure_button = QPushButton("Connect…")
+        self.configure_button.clicked.connect(self.configure_connection)
+        header.addWidget(self.configure_button)
         root.addLayout(header)
-        intro = QLabel("Search and play music from your personal Navidrome server.")
+
+        intro = QLabel("Funkwhale is open-source and self-hostable. Connect to a pod to search and stream its library.")
         intro.setObjectName("Muted")
+        intro.setWordWrap(True)
         root.addWidget(intro)
 
-        credentials = QFrame()
-        credentials.setObjectName("Panel")
-        credentials_layout = QVBoxLayout(credentials)
-        credentials_layout.setContentsMargins(14, 14, 14, 14)
-        credentials_layout.setSpacing(8)
-        self.server_input = QLineEdit(str(settings.value("musicServer", "https://localhost:4040")))
-        self.server_input.setPlaceholderText("https://localhost:4040")
-        credentials_layout.addWidget(self.server_input)
-        row = QHBoxLayout()
-        self.username_input = QLineEdit(str(settings.value("musicUsername", "")))
-        self.username_input.setPlaceholderText("Navidrome username")
-        row.addWidget(self.username_input, 1)
-        self.password_input = QLineEdit()
-        self.password_input.setPlaceholderText("Navidrome password")
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        row.addWidget(self.password_input, 1)
-        credentials_layout.addLayout(row)
-        self.local_tls_checkbox = QCheckBox("Allow a self-signed certificate for localhost only")
-        self.local_tls_checkbox.setToolTip("Use this only for your own Navidrome server on this device.")
-        default_server = str(settings.value("musicServer", "https://localhost:4040"))
-        parsed_default = urlparse(default_server)
-        self.local_tls_checkbox.setChecked(
-            parsed_default.scheme == "https" and parsed_default.hostname in {"localhost", "127.0.0.1", "::1"}
-        )
-        credentials_layout.addWidget(self.local_tls_checkbox)
-        connect_row = QHBoxLayout()
-        privacy_note = QLabel("The password stays in memory for this app session.")
-        privacy_note.setObjectName("Muted")
-        connect_row.addWidget(privacy_note, 1)
-        self.connect_button = QPushButton("Connect")
-        self.connect_button.setObjectName("PrimaryButton")
-        self.connect_button.clicked.connect(self.connect_server)
-        connect_row.addWidget(self.connect_button)
-        credentials_layout.addLayout(connect_row)
-        root.addWidget(credentials)
+        self.server_label = QLabel(self.server_url)
+        self.server_label.setObjectName("Muted")
+        self.server_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root.addWidget(self.server_label)
 
         search_row = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search songs, artists, or albums")
         self.search_input.returnPressed.connect(self.search_library)
         self.search_button = QPushButton("Search")
+        self.search_button.setObjectName("PrimaryButton")
         self.search_button.clicked.connect(self.search_library)
-        self.search_button.setEnabled(False)
         search_row.addWidget(self.search_input, 1)
         search_row.addWidget(self.search_button)
         root.addLayout(search_row)
@@ -511,93 +541,111 @@ class NavidromePlayerDialog(QDialog):
             self.play_pause_button.setEnabled(False)
         self.setStyleSheet(WORKSPACE_STYLE)
 
-    def request(self, operation: str, query: str = ""):
+    def configure_connection(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Connect to Funkwhale")
+        form = QVBoxLayout(dialog)
+        form.addWidget(QLabel("Pod address (for example, https://demo.funkwhale.audio)"))
+        server_input = QLineEdit(self.server_url)
+        server_input.setPlaceholderText("https://your-funkwhale-pod.example")
+        form.addWidget(server_input)
+        form.addWidget(QLabel("Funkwhale username"))
+        username_input = QLineEdit(self.username)
+        form.addWidget(username_input)
+        form.addWidget(QLabel("Subsonic API password (request one in your Funkwhale account settings)"))
+        password_input = QLineEdit()
+        password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        password_input.setPlaceholderText("Only held in memory for this session")
+        form.addWidget(password_input)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addWidget(buttons)
+        dialog.setMinimumWidth(460)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.server_url = server_input.text().strip().rstrip("/")
+        self.username = username_input.text().strip()
+        self.password = password_input.text()
+        self.settings.setValue("funkwhaleServer", self.server_url)
+        self.settings.setValue("funkwhaleUsername", self.username)
+        self.server_label.setText(self.server_url or "No Funkwhale pod configured")
+        self.connection_status.setText("Checking Funkwhale connection…")
+        self.request("ping")
+
+    def request(self, operation: str, query: str = "", track: Optional[dict[str, Any]] = None):
         if self.worker is not None and self.worker.isRunning():
             return
-        self.connect_button.setEnabled(False)
+        track_id = str((track or {}).get("id", ""))
+        if not self.password:
+            self.connection_status.setText("Connect to Funkwhale first using the Connect button.")
+            return
         self.search_button.setEnabled(False)
-        self.worker = NavidromeRequestWorker(
-            self.server_input.text().strip(), self.username_input.text().strip(),
-            self.password, operation, query, self.local_tls_checkbox.isChecked(),
+        self.worker = FunkwhaleMusicRequestWorker(
+            operation, self.server_url, self.username, self.password, query, track_id,
         )
         self.worker.completed.connect(self.on_request_complete)
         self.worker.failed.connect(self.on_request_failed)
         self.worker.finished.connect(self.release_worker)
         self.worker.start()
 
-    def connect_server(self):
-        server = self.server_input.text().strip().rstrip("/")
-        username = self.username_input.text().strip()
-        password = self.password_input.text()
-        if not server or not username or not password:
-            self.connection_status.setText("Enter the server, username, and password")
-            return
-        self.password = password
-        self.settings.setValue("musicServer", server)
-        self.settings.setValue("musicUsername", username)
-        self.connection_status.setText("Connecting…")
-        self.request("connect")
-
     def search_library(self):
         query = self.search_input.text().strip()
-        if not self.connected:
-            self.connection_status.setText("Connect to Navidrome first")
-        elif query:
-            self.connection_status.setText("Searching…")
+        if query:
+            self.connection_status.setText("Searching Funkwhale…")
             self.request("search", query)
 
     def on_request_complete(self, operation: str, result: object):
-        if operation == "connect":
-            self.connected = True
-            self.connection_status.setText("Connected to Navidrome")
-            self.search_button.setEnabled(True)
-            self.password_input.clear()
+        if operation == "ping":
+            self.connection_status.setText("Connected to Funkwhale")
             return
-        songs = result if isinstance(result, list) else []
+        if operation == "stream":
+            stream_url = str(result.get("url", "")) if isinstance(result, dict) else ""
+            if self.player is None:
+                self.connection_status.setText("QtMultimedia playback is unavailable")
+                return
+            track = self.pending_track or {}
+            self.now_playing.setText(
+                f"{track.get('name', 'Untitled')}  ·  {track.get('artist', 'Unknown artist')}"
+            )
+            self.player.setSource(QUrl(stream_url))
+            self.player.play()
+            self.connection_status.setText("Starting playback…")
+            return
+
+        tracks = result if isinstance(result, list) else []
         self.song_list.clear()
-        for song in songs:
-            if not isinstance(song, dict):
-                continue
-            title = str(song.get("title", "Untitled"))
-            artist = str(song.get("artist", "Unknown artist"))
-            album = str(song.get("album", ""))
+        for track in tracks:
+            title = str(track.get("name", "Untitled"))
+            artist = str(track.get("artist", "Unknown artist"))
+            album = str(track.get("album", ""))
             item = QListWidgetItem(f"{title}\n{artist}" + (f"  ·  {album}" if album else ""))
-            item.setData(Qt.ItemDataRole.UserRole, song)
+            item.setData(Qt.ItemDataRole.UserRole, track)
             self.song_list.addItem(item)
-        self.connection_status.setText(f"{self.song_list.count()} matching track(s)")
+        self.connection_status.setText(f"{self.song_list.count()} track(s) found on this pod")
 
     def on_request_failed(self, operation: str, message: str):
-        if operation == "connect":
-            self.connected = False
-        self.connection_status.setText(f"Connection failed: {message}")
-        self.search_button.setEnabled(self.connected)
+        self.connection_status.setText(f"Funkwhale {operation} failed: {message}")
 
     def release_worker(self):
-        self.connect_button.setEnabled(True)
-        self.search_button.setEnabled(self.connected)
+        self.search_button.setEnabled(True)
         if self.worker is not None:
             self.worker.deleteLater()
             self.worker = None
 
     def play_selected(self, item=None):
         item = item or self.song_list.currentItem()
-        player = self.player
-        if item is None or player is None:
+        if item is None:
             return
-        song = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(song, dict) or not song.get("id"):
+        track = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(track, dict) or not track.get("id"):
             return
-        parsed = urlparse(self.server_input.text().strip().rstrip("/"))
-        salt = secrets.token_hex(12)
-        token = hashlib.md5((self.password + salt).encode("utf-8")).hexdigest()
-        params = urlencode({
-            "id": str(song["id"]), "u": self.username_input.text().strip(),
-            "t": token, "s": salt, "v": "1.16.1", "c": "RobustNotes",
-        })
-        stream_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}/rest/stream.view?{params}"
-        self.now_playing.setText(f"{song.get('title', 'Untitled')}  ·  {song.get('artist', 'Unknown artist')}")
-        player.setSource(QUrl(stream_url))
-        player.play()
+        if self.player is None:
+            self.connection_status.setText("QtMultimedia playback is unavailable")
+            return
+        self.pending_track = track
+        self.connection_status.setText("Resolving audio stream…")
+        self.request("stream", track=track)
 
     def toggle_playback(self):
         player = self.player
@@ -609,10 +657,11 @@ class NavidromePlayerDialog(QDialog):
             player.play()
 
     def stop_playback(self):
-        player = self.player
-        if player is not None:
-            player.stop()
+        if self.player is not None:
+            self.player.stop()
+            self.player.setSource(QUrl())
             self.now_playing.setText("Playback stopped")
+        self.pending_track = None
 
     def update_play_button(self, state):
         if QMediaPlayer is not None and state == QMediaPlayer.PlaybackState.PlayingState:
@@ -827,6 +876,7 @@ class SmoothCanvasView(QGraphicsView):
         self.accent_color = QColor("#48DDF0")
         self.pen_width = 3.0
         self._tablet_active = False
+        self._tablet_mouse_routed = False
         self._tablet_last_point = QPointF()
         self._tablet_last_width = 0.0
         self._tablet_items: list[QGraphicsItem] = []
@@ -847,11 +897,6 @@ class SmoothCanvasView(QGraphicsView):
         self.erased_in_drag: list[QGraphicsItem] = []
         self.lasso_path_item: Optional[QGraphicsPathItem] = None
         self.moving_items_before: Optional[list[tuple[QGraphicsItem, QPointF]]] = None
-
-        self.hold_timer = QTimer(self)
-        self.hold_timer.setSingleShot(True)
-        self.hold_timer.setInterval(450)
-        self.hold_timer.timeout.connect(self.snap_freehand_to_shape)
 
     def current_page_scene(self) -> Optional[PageScene]:
         scene = self.scene()
@@ -1057,9 +1102,6 @@ class SmoothCanvasView(QGraphicsView):
             return
 
         self.points.append(scene_pos)
-        if len(self.points) > 10:
-            self.hold_timer.start()
-
         previous = self.points[-2]
         midpoint = QPointF(
             (previous.x() + scene_pos.x()) / 2.0,
@@ -1070,8 +1112,6 @@ class SmoothCanvasView(QGraphicsView):
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
-        self.hold_timer.stop()
-
         if self.is_panning:
             self.is_panning = False
             self.setCursor(Qt.CursorShape.CrossCursor)
@@ -1126,8 +1166,14 @@ class SmoothCanvasView(QGraphicsView):
             elif self.shape_has_snapped:
                 self.update_snapped_preview(release_pos)
             elif self.points:
-                self.current_path.lineTo(release_pos)
-                self.current_item.setPath(self.current_path)
+                if (release_pos - self.points[-1]).manhattanLength() >= 1.0:
+                    self.points.append(release_pos)
+                self.snap_freehand_to_shape()
+                if self.shape_has_snapped:
+                    self.update_snapped_preview(release_pos)
+                else:
+                    self.current_path.lineTo(release_pos)
+                    self.current_item.setPath(self.current_path)
 
             # Ignore an accidental zero-length click.
             if not self.current_path.isEmpty() and self.current_path.length() > 0.5:
@@ -1144,6 +1190,49 @@ class SmoothCanvasView(QGraphicsView):
 
     def tabletEvent(self, event) -> None:  # noqa: N802 - Qt override
         event_type = event.type()
+        # QGraphicsView's base mouse handlers accept QMouseEvent only. Route
+        # tablet input through equivalent mouse events for tools that rely on
+        # Graphics View's item selection/drag behavior (notably lasso); keep
+        # native tablet events for pressure-sensitive ink below.
+        if self.current_mode not in {"PEN", "HIGHLIGHTER", "LASER"}:
+            if event_type == QEvent.Type.TabletPress and event.button() == Qt.MouseButton.LeftButton:
+                self._tablet_mouse_routed = True
+                mouse_event = QMouseEvent(
+                    QEvent.Type.MouseButtonPress,
+                    event.position(),
+                    event.globalPosition(),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton,
+                    event.modifiers(),
+                )
+                self.mousePressEvent(mouse_event)
+                event.accept()
+                return
+            if event_type == QEvent.Type.TabletMove and self._tablet_mouse_routed:
+                mouse_event = QMouseEvent(
+                    QEvent.Type.MouseMove,
+                    event.position(),
+                    event.globalPosition(),
+                    Qt.MouseButton.NoButton,
+                    Qt.MouseButton.LeftButton,
+                    event.modifiers(),
+                )
+                self.mouseMoveEvent(mouse_event)
+                event.accept()
+                return
+            if event_type == QEvent.Type.TabletRelease and self._tablet_mouse_routed:
+                mouse_event = QMouseEvent(
+                    QEvent.Type.MouseButtonRelease,
+                    event.position(),
+                    event.globalPosition(),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.NoButton,
+                    event.modifiers(),
+                )
+                self._tablet_mouse_routed = False
+                self.mouseReleaseEvent(mouse_event)
+                event.accept()
+                return
         if event_type == QEvent.Type.TabletPress and event.button() == Qt.MouseButton.LeftButton:
             self.mousePressEvent(event)
             if self.is_drawing and self.current_mode in {"PEN", "HIGHLIGHTER", "LASER"}:
@@ -1169,7 +1258,10 @@ class SmoothCanvasView(QGraphicsView):
             if scene is not None and (point - self._tablet_last_point).manhattanLength() >= 0.8:
                 segment = self._tablet_segment_item
                 if segment is None or abs(width - self._tablet_last_width) >= 0.5:
-                    segment = QGraphicsPathItem(QPainterPath(self._tablet_last_point))
+                    segment_path = QPainterPath()
+                    segment_path.moveTo(self._tablet_last_point)
+                    segment = QGraphicsPathItem()
+                    segment.setPath(segment_path)
                     pen = self.make_pen()
                     pen.setWidthF(width)
                     segment.setPen(pen)
@@ -1265,7 +1357,7 @@ class SmoothCanvasView(QGraphicsView):
                 self.erased_in_drag.append(item)
 
     def snap_freehand_to_shape(self) -> None:
-        if not self.is_drawing or len(self.points) < 10 or not self.current_item:
+        if len(self.points) < 10 or not self.current_item:
             return
         if self.current_mode not in ("PEN", "HIGHLIGHTER", "LASER"):
             return
@@ -1578,7 +1670,7 @@ class NotebookWindow(QMainWindow):
         self.ai_worker: Optional[LocalAIChatWorker] = None
         self.ocr_worker: Optional[HandwritingOCRWorker] = None
         self.ocr_target_scene: Optional[PageScene] = None
-        self.music_dialog: Optional[NavidromePlayerDialog] = None
+        self.music_dialog: Optional[FunkwhaleMusicPlayerDialog] = None
         self.transcription_worker: Optional[LocalTranscriptionWorker] = None
         self.audio_source = None
         self.audio_capture_device = None
@@ -2143,13 +2235,60 @@ class NotebookWindow(QMainWindow):
         scene = getattr(self, "ocr_target_scene", None)
         if scene is None:
             return
-        corrected_text, accepted = QInputDialog.getMultiLineText(
-            self, "Review recognized handwriting",
-            "Check and correct the local OCR result before saving it to this page:",
-            recognized_text,
+        review = QDialog(self)
+        review.setWindowTitle("Review handwriting")
+        review.setMinimumSize(560, 390)
+        review_layout = QVBoxLayout(review)
+        review_layout.setContentsMargins(22, 20, 22, 18)
+        review_layout.setSpacing(12)
+
+        heading = QLabel("Recognized handwriting")
+        heading.setObjectName("AIHeading")
+        review_layout.addWidget(heading)
+        instruction = QLabel("Review the transcription, correct any recognition errors, then save it as searchable page text.")
+        instruction.setWordWrap(True)
+        instruction.setObjectName("Muted")
+        review_layout.addWidget(instruction)
+
+        editor = QTextEdit()
+        editor.setObjectName("OCRCursivePreview")
+        normalized_preview = normalize_ocr_text(recognized_text)
+        preview_html = html.escape(normalized_preview).replace("\n", "<br>")
+        editor.setHtml(
+            "<div style=\"font-family:'Segoe Script'; font-size:18pt; color:#24333d;\">"
+            f"{preview_html}</div>"
         )
-        if accepted and corrected_text.strip():
-            scene.ocr_text = corrected_text.strip()
+        editor.setPlaceholderText("Recognized text appears here…")
+        editor.setToolTip("Editable cursive-style preview of the recognized text")
+        review_layout.addWidget(editor, 1)
+        review.setStyleSheet(
+            "QDialog { background: #171d26; color: #f3f7fb; } "
+            "QTextEdit#OCRCursivePreview { background: #f8f5ee; color: #24333d; "
+            "border: 1px solid #c8d3d7; border-radius: 12px; padding: 16px; "
+            "font-family: 'Segoe Script'; font-size: 20pt; } "
+            "QLabel#AIHeading { color: #f3f7fb; font-size: 17px; font-weight: 700; } "
+            "QLabel#Muted { color: #9eacbb; } "
+            "QPushButton { background: #253241; color: #f3f7fb; border: 1px solid #3c4b5b; "
+            "border-radius: 8px; padding: 9px 14px; } "
+            "QPushButton:hover { border-color: #48ddef; }"
+        )
+        cursive_font = QFont("Segoe Script", 18)
+        cursive_font.setStyleHint(QFont.StyleHint.Cursive)
+        editor.setFont(cursive_font)
+        editor.document().setDefaultFont(cursive_font)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Save searchable text")
+        buttons.accepted.connect(review.accept)
+        buttons.rejected.connect(review.reject)
+        review_layout.addWidget(buttons)
+
+        accepted = review.exec() == QDialog.DialogCode.Accepted
+        corrected_text = normalize_ocr_text(editor.toPlainText())
+        if accepted and corrected_text:
+            scene.ocr_text = corrected_text
             self.save_document()
             self.ai_status_label.setText("Handwriting text saved to this page")
             self.append_ai_message("assistant", "I added the recognized handwriting to this page's searchable context. You can now ask RobustNotes AI about it.")
@@ -2968,7 +3107,7 @@ class NotebookWindow(QMainWindow):
         focus_action = menu.addAction("Toggle focus mode     F11")
         import_action = menu.addAction("Import PDF…")
         export_action = menu.addAction("Export notebook as PDF…")
-        music_action = menu.addAction("Listen to Navidrome…")
+        music_action = menu.addAction("Open music player…")
         menu.addSeparator()
         delete_action = menu.addAction("Delete current page")
         sender = self.sender()
@@ -3005,7 +3144,7 @@ class NotebookWindow(QMainWindow):
 
     def open_music_player(self) -> None:
         if self.music_dialog is None:
-            self.music_dialog = NavidromePlayerDialog(self, self.ai_settings)
+            self.music_dialog = FunkwhaleMusicPlayerDialog(self, self.ai_settings)
         self.music_dialog.show()
         self.music_dialog.raise_()
         self.music_dialog.activateWindow()
@@ -3994,8 +4133,6 @@ class WorkspaceWindow(QMainWindow):
                 if music is not None:
                     music.stop_playback()
                     music.password = ""
-                    music.connected = False
-                    music.password_input.clear()
                     music.hide()
             window.close()
         self.open_windows.clear()
