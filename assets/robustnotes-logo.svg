@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="280" viewBox="0 0 1120 280" fill="none">
+  <defs>
+    <linearGradient id="page" x1="40" y1="32" x2="207" y2="225" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#65F0E8"/>
+      <stop offset="0.58" stop-color="#43D8E7"/>
+      <stop offset="1" stop-color="#7C78FF"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="88" y1="52" x2="190" y2="188" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FFFF"/>
+      <stop offset="1" stop-color="#B9F8F4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Original open-page mark with a small idea spark; designed for app and print use. -->
+  <g transform="translate(24 24)">
+    <rect x="2" y="2" width="224" height="224" rx="58" fill="#111923" stroke="#273644" stroke-width="4"/>
+    <path d="M42 65C66 51 89 54 114 70V177C88 160 65 158 42 173V65Z" fill="url(#page)" fill-opacity=".13" stroke="url(#page)" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M114 70C139 54 163 51 187 65V173C163 158 139 160 114 177V70Z" fill="url(#page)" fill-opacity=".19" stroke="url(#page)" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M114 70V177" stroke="url(#accent)" stroke-width="7" stroke-linecap="round"/>
+    <path d="M60 91C75 84 88 86 99 93M60 111C75 104 88 106 99 113M129 94C143 86 157 85 171 91M129 114C143 106 157 105 171 111" stroke="url(#accent)" stroke-width="6" stroke-linecap="round" opacity=".92"/>
+    <path d="M190 30L196 44L210 50L196 56L190 70L184 56L170 50L184 44L190 30Z" fill="#76F3E9"/>
+    <circle cx="190" cy="50" r="3.5" fill="#111923"/>
+  </g>
+
+  <g font-family="Segoe UI, Inter, Arial, sans-serif">
+    <text x="292" y="143" font-size="82" font-weight="760" letter-spacing="-3.5" fill="#F3F7FA">Robust<tspan fill="#58E0E7">Notes</tspan></text>
+    <path d="M296 174H440" stroke="#58E0E7" stroke-width="5" stroke-linecap="round"/>
+    <text x="296" y="221" font-size="23" font-weight="650" letter-spacing="7" fill="#9DADBA">THINK CLEARLY. KEEP EVERYTHING.</text>
+  </g>
+</svg>
