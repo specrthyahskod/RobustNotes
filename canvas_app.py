@@ -22,7 +22,7 @@ import zipfile
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, TypedDict
+from typing import Any, Optional, Sequence, TypedDict
 from urllib.parse import urlencode, urlparse
 
 from PySide6.QtCore import Qt, QEvent, QPointF, QRectF, QSize, QSizeF, QMarginsF, Signal, QTimer, QBuffer, QIODevice, QThread, QSettings, QStandardPaths, QUrl
@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGraphicsItem,
     QGraphicsPathItem,
+    QGraphicsTextItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
@@ -816,6 +817,13 @@ class PageScene(QGraphicsScene):
         elif entry.action == "MOVE" and entry.before is not None:
             for item, position in zip(entry.items, entry.before):
                 item.setPos(position)
+        elif entry.action == "REPLACE" and entry.items:
+            replacement = entry.items[-1]
+            if replacement.scene() is self:
+                self.removeItem(replacement)
+            for item in entry.items[:-1]:
+                if item.scene() is None:
+                    self.addItem(item)
 
         self.redo_stack.append(entry)
         return True
@@ -836,6 +844,13 @@ class PageScene(QGraphicsScene):
         elif entry.action == "MOVE" and entry.after is not None:
             for item, position in zip(entry.items, entry.after):
                 item.setPos(position)
+        elif entry.action == "REPLACE" and entry.items:
+            for item in entry.items[:-1]:
+                if item.scene() is self:
+                    self.removeItem(item)
+            replacement = entry.items[-1]
+            if replacement.scene() is None:
+                self.addItem(replacement)
 
         self.undo_stack.append(entry)
         return True
@@ -1670,6 +1685,7 @@ class NotebookWindow(QMainWindow):
         self.ai_worker: Optional[LocalAIChatWorker] = None
         self.ocr_worker: Optional[HandwritingOCRWorker] = None
         self.ocr_target_scene: Optional[PageScene] = None
+        self.ocr_target_items: Sequence[QGraphicsItem] = ()
         self.music_dialog: Optional[FunkwhaleMusicPlayerDialog] = None
         self.transcription_worker: Optional[LocalTranscriptionWorker] = None
         self.audio_source = None
@@ -2217,11 +2233,16 @@ class NotebookWindow(QMainWindow):
             return
         if self.ocr_worker is not None and self.ocr_worker.isRunning():
             return
-        encoded_image = self.current_page_image_base64()
+        selected_items = [
+            item for item in scene.selectedItems()
+            if item is not scene.bg_item and isinstance(item, QGraphicsPathItem)
+        ]
+        encoded_image = self.current_page_image_base64(selected_items or None)
         if not encoded_image:
             self.ai_status_label.setText("Could not capture the current page")
             return
         self.ocr_target_scene = scene
+        self.ocr_target_items = selected_items
         self.ocr_button.setEnabled(False)
         self.ai_status_label.setText("Preparing page for handwriting recognition…")
         self.ocr_worker = HandwritingOCRWorker(base64.b64decode(encoded_image))
@@ -2245,7 +2266,10 @@ class NotebookWindow(QMainWindow):
         heading = QLabel("Recognized handwriting")
         heading.setObjectName("AIHeading")
         review_layout.addWidget(heading)
-        instruction = QLabel("Review the transcription, correct any recognition errors, then save it as searchable page text.")
+        instruction = QLabel(
+            "Correct any recognition errors below. Select handwriting with the lasso before OCR "
+            "to replace those strokes with editable cursive text."
+        )
         instruction.setWordWrap(True)
         instruction.setObjectName("Muted")
         review_layout.addWidget(instruction)
@@ -2277,11 +2301,21 @@ class NotebookWindow(QMainWindow):
         editor.setFont(cursive_font)
         editor.document().setDefaultFont(cursive_font)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        save_button = buttons.addButton("Save searchable text", QDialogButtonBox.ButtonRole.AcceptRole)
+        replace_button = buttons.addButton("Replace selected handwriting", QDialogButtonBox.ButtonRole.ActionRole)
+        replace_button.setEnabled(bool(self.ocr_target_items))
+        replace_button.setToolTip(
+            "Select handwritten strokes with the lasso before running OCR to enable replacement."
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Save searchable text")
-        buttons.accepted.connect(review.accept)
+        review_choice = {"replace": False}
+
+        def accept_review(replace_selected: bool) -> None:
+            review_choice["replace"] = replace_selected
+            review.accept()
+
+        save_button.clicked.connect(lambda: accept_review(False))
+        replace_button.clicked.connect(lambda: accept_review(True))
         buttons.rejected.connect(review.reject)
         review_layout.addWidget(buttons)
 
@@ -2289,15 +2323,61 @@ class NotebookWindow(QMainWindow):
         corrected_text = normalize_ocr_text(editor.toPlainText())
         if accepted and corrected_text:
             scene.ocr_text = corrected_text
+            if review_choice["replace"]:
+                self.replace_selected_handwriting(scene, self.ocr_target_items, corrected_text)
             self.save_document()
-            self.ai_status_label.setText("Handwriting text saved to this page")
-            self.append_ai_message("assistant", "I added the recognized handwriting to this page's searchable context. You can now ask RobustNotes AI about it.")
+            if review_choice["replace"]:
+                self.ai_status_label.setText("Selected handwriting replaced with cursive text")
+            else:
+                self.ai_status_label.setText("Handwriting text saved to this page")
+                self.append_ai_message("assistant", "I added the recognized handwriting to this page's searchable context. You can now ask RobustNotes AI about it.")
         elif accepted:
             scene.ocr_text = ""
             self.save_document()
             self.ai_status_label.setText("Handwriting text cleared")
         else:
             self.ai_status_label.setText("OCR result discarded")
+        self.ocr_target_items = ()
+
+    def replace_selected_handwriting(
+        self, scene: PageScene, selected_items: Sequence[QGraphicsItem], text: str,
+    ) -> None:
+        """Replace the lasso-selected ink strokes with an editable cursive text item."""
+        selected = [item for item in selected_items if item.scene() is scene]
+        if not selected:
+            return
+        bounds = QRectF(selected[0].sceneBoundingRect())
+        for item in selected[1:]:
+            bounds = bounds.united(item.sceneBoundingRect())
+        bounds = bounds.intersected(scene.page_rect)
+        if bounds.isEmpty():
+            return
+
+        source_color = next(
+            (item.pen().color() for item in selected if isinstance(item, QGraphicsPathItem)),
+            QColor("#24333d"),
+        )
+        font = QFont("Segoe Script")
+        font.setStyleHint(QFont.StyleHint.Cursive)
+        font.setPointSizeF(max(10.0, min(22.0, bounds.height() * 0.58)))
+        text_item = QGraphicsTextItem()
+        text_item.setPlainText(text)
+        text_item.setFont(font)
+        text_item.setDefaultTextColor(source_color)
+        text_item.setTextWidth(max(100.0, bounds.width() + 24.0))
+        text_item.setPos(bounds.left(), bounds.top())
+        text_item.setZValue(2)
+        text_item.setData(0, "OCR_CURSIVE_TEXT")
+        text_item.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+        )
+
+        for item in selected:
+            scene.removeItem(item)
+        scene.addItem(text_item)
+        scene.push_action("REPLACE", [*selected, text_item])
+        self.canvas.stroke_completed.emit()
 
     def on_ocr_error(self, message: str) -> None:
         self.ai_status_label.setText("Handwriting recognition needs setup or another attempt")
@@ -2309,11 +2389,27 @@ class NotebookWindow(QMainWindow):
             self.ocr_worker.deleteLater()
             self.ocr_worker = None
 
-    def current_page_image_base64(self) -> str:
+    def current_page_image_base64(
+        self, selected_items: Optional[Sequence[QGraphicsItem]] = None,
+    ) -> str:
         scene = self.canvas.current_page_scene()
         if scene is None:
             return ""
         page_rect = scene.page_rect
+        hidden_items: list[tuple[QGraphicsItem, bool]] = []
+        if selected_items:
+            selection_bounds = QRectF(selected_items[0].sceneBoundingRect())
+            for item in selected_items[1:]:
+                selection_bounds = selection_bounds.united(item.sceneBoundingRect())
+            page_rect = selection_bounds.adjusted(-36, -36, 36, 36).intersected(scene.page_rect)
+            for item in scene.items():
+                if item not in selected_items:
+                    hidden_items.append((item, item.isVisible()))
+                    item.setVisible(False)
+        if page_rect.isEmpty():
+            for item, was_visible in hidden_items:
+                item.setVisible(was_visible)
+            return ""
         target_width = min(1100, max(1, round(page_rect.width())))
         target_height = max(1, round(target_width * page_rect.height() / page_rect.width()))
         image = QImage(target_width, target_height, QImage.Format.Format_ARGB32_Premultiplied)
@@ -2321,6 +2417,8 @@ class NotebookWindow(QMainWindow):
         painter = QPainter(image)
         scene.render(painter, QRectF(0, 0, target_width, target_height), page_rect)
         painter.end()
+        for item, was_visible in hidden_items:
+            item.setVisible(was_visible)
         temporary_path = ""
         try:
             temporary_directory = (
@@ -2989,24 +3087,35 @@ class NotebookWindow(QMainWindow):
         duplicate = self.pages[-1]
         duplicate.ocr_text = source.ocr_text
         for item in source.items(Qt.SortOrder.AscendingOrder):
-            if item is source.bg_item or not isinstance(item, QGraphicsPathItem):
+            if item is source.bg_item:
                 continue
-            copied_item = QGraphicsPathItem(item.path())
-            copied_item.setPen(QPen(item.pen()))
-            copied_item.setPos(item.pos())
-            copied_item.setZValue(item.zValue())
-            copied_item.setData(0, item.data(0))
+            if isinstance(item, QGraphicsPathItem):
+                copied_item = QGraphicsPathItem(item.path())
+                copied_item.setPen(QPen(item.pen()))
+                copied_item.setPos(item.pos())
+                copied_item.setZValue(item.zValue())
+                copied_item.setData(0, item.data(0))
+                copied_item.setCacheMode(QGraphicsItem.CacheMode.NoCache)
+                if item.data(0) == "LASER":
+                    glow = QGraphicsDropShadowEffect()
+                    glow.setBlurRadius(25)
+                    glow.setColor(item.pen().color())
+                    glow.setOffset(0, 0)
+                    copied_item.setGraphicsEffect(glow)
+            elif isinstance(item, QGraphicsTextItem) and item.data(0) == "OCR_CURSIVE_TEXT":
+                copied_item = QGraphicsTextItem(item.toPlainText())
+                copied_item.setFont(QFont(item.font()))
+                copied_item.setDefaultTextColor(item.defaultTextColor())
+                copied_item.setTextWidth(item.textWidth())
+                copied_item.setPos(item.pos())
+                copied_item.setZValue(item.zValue())
+                copied_item.setData(0, "OCR_CURSIVE_TEXT")
+            else:
+                continue
             copied_item.setFlags(
                 QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
                 | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
             )
-            copied_item.setCacheMode(QGraphicsItem.CacheMode.NoCache)
-            if item.data(0) == "LASER":
-                glow = QGraphicsDropShadowEffect()
-                glow.setBlurRadius(25)
-                glow.setColor(item.pen().color())
-                glow.setOffset(0, 0)
-                copied_item.setGraphicsEffect(glow)
             duplicate.addItem(copied_item)
 
         self.update_current_thumbnail()
@@ -3297,24 +3406,39 @@ class NotebookWindow(QMainWindow):
                     self._saved_page_image_keys[image_path] = image_key
                 drawings: list[dict[str, object]] = []
                 for item in scene.items(Qt.SortOrder.AscendingOrder):
-                    if not isinstance(item, QGraphicsPathItem) or item is scene.bg_item:
+                    if item is scene.bg_item:
                         continue
-                    path = item.path()
-                    elements = [
-                        [path.elementAt(index).type.value, path.elementAt(index).x, path.elementAt(index).y]
-                        for index in range(path.elementCount())
-                    ]
-                    pen = item.pen()
                     position = item.pos()
-                    drawings.append({
-                        "elements": elements,
-                        "color": pen.color().name(QColor.NameFormat.HexArgb),
-                        "width": pen.widthF(),
-                        "mode": str(item.data(0) or "PEN"),
-                        "x": position.x(),
-                        "y": position.y(),
-                        "z": item.zValue(),
-                    })
+                    if isinstance(item, QGraphicsPathItem):
+                        path = item.path()
+                        elements = [
+                            [path.elementAt(index).type.value, path.elementAt(index).x, path.elementAt(index).y]
+                            for index in range(path.elementCount())
+                        ]
+                        pen = item.pen()
+                        drawings.append({
+                            "kind": "path",
+                            "elements": elements,
+                            "color": pen.color().name(QColor.NameFormat.HexArgb),
+                            "width": pen.widthF(),
+                            "mode": str(item.data(0) or "PEN"),
+                            "x": position.x(),
+                            "y": position.y(),
+                            "z": item.zValue(),
+                        })
+                    elif isinstance(item, QGraphicsTextItem) and item.data(0) == "OCR_CURSIVE_TEXT":
+                        font = item.font()
+                        drawings.append({
+                            "kind": "text",
+                            "text": item.toPlainText(),
+                            "font_family": font.family(),
+                            "font_size": font.pointSizeF(),
+                            "color": item.defaultTextColor().name(QColor.NameFormat.HexArgb),
+                            "text_width": item.textWidth(),
+                            "x": position.x(),
+                            "y": position.y(),
+                            "z": item.zValue(),
+                        })
                 page_data.append({
                     "title": self.page_list.item(page_index).text(),
                     "image": str(image_path.relative_to(self.document_path.parent)),
@@ -3394,6 +3518,26 @@ class NotebookWindow(QMainWindow):
                     self._saved_page_image_keys[image_path] = stored_image_key
                 scene.ocr_text = str(page_record.get("ocr_text", ""))
                 for drawing in page_record.get("drawings", []):
+                    if drawing.get("kind") == "text":
+                        item = QGraphicsTextItem(str(drawing.get("text", "")))
+                        font = QFont(str(drawing.get("font_family", "Segoe Script")))
+                        font.setStyleHint(QFont.StyleHint.Cursive)
+                        try:
+                            font.setPointSizeF(float(drawing.get("font_size", 18.0)))
+                            item.setTextWidth(max(20.0, float(drawing.get("text_width", 500.0))))
+                            item.setPos(float(drawing.get("x", 0.0)), float(drawing.get("y", 0.0)))
+                            item.setZValue(float(drawing.get("z", 2.0)))
+                        except (TypeError, ValueError):
+                            font.setPointSize(18)
+                        item.setFont(font)
+                        item.setDefaultTextColor(QColor(str(drawing.get("color", "#24333D"))))
+                        item.setData(0, "OCR_CURSIVE_TEXT")
+                        item.setFlags(
+                            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+                            | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+                        )
+                        scene.addItem(item)
+                        continue
                     elements = drawing.get("elements", [])
                     path = self.path_from_elements(elements)
                     if path.isEmpty():
