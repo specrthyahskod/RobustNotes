@@ -70,7 +70,7 @@ These are RobustNotes' product priorities and the way its features are put toget
 - Optional voice input converts speech to text locally when the speech-recognition dependencies are installed.
 - Connect to a Navidrome server through the Subsonic API for in-app music streaming.
 
-**AI integration status:** the current desktop chat adapter expects a locally hosted Ollama-compatible chat endpoint (configurable in the app or with `ROBUSTNOTES_OLLAMA_URL` and `ROBUSTNOTES_MODEL`). It does not call the ChatGPT API. RobustNotes' own trained SLM and its runtime are not included in this repository yet; connecting that model is future integration work.
+**AI integration status:** the current desktop chat adapter expects a locally hosted Ollama-compatible chat endpoint (configurable in the app or with `ROBUSTNOTES_OLLAMA_URL` and `ROBUSTNOTES_MODEL`). RobustNotes' own trained SLM and its runtime are not included in this repository yet; connecting that model is future integration work.
 
 ### Privacy, backup, and recovery
 
@@ -195,4 +195,4 @@ requirements.txt    Desktop runtime dependencies
 
 ## License
 
-No license has been added yet. Check with the author before reusing or redistributing this project.
+MIT License 
