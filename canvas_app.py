@@ -12,6 +12,7 @@ import re
 import sys
 import secrets
 import shutil
+import stat
 import tempfile
 import threading
 import urllib.error
@@ -22,8 +23,96 @@ import zipfile
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Optional, Sequence, TypedDict
 from urllib.parse import urlencode, urlparse
+
+
+def restore_workspace_archive(archive: zipfile.ZipFile, destination: Path) -> None:
+    """Safely stage and restore a bounded ZIP archive into a workspace."""
+    members = archive.infolist()
+    if len(members) > 10_000:
+        raise ValueError("The archive contains too many entries.")
+
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+    seen_paths: set[str] = set()
+    total_size = 0
+    max_member_size = 2 * 1024**3
+    max_total_size = 4 * 1024**3
+    validated_members: list[tuple[zipfile.ZipInfo, tuple[str, ...]]] = []
+    for member in members:
+        raw_name = member.filename
+        normalized_name = raw_name.replace("\\", "/")
+        parts = normalized_name.split("/")
+        if member.is_dir() and parts and parts[-1] == "":
+            parts.pop()
+        if (
+            not normalized_name
+            or normalized_name.startswith("/")
+            or "\x00" in normalized_name
+            or any(part in ("", ".", "..") or ":" in part for part in parts)
+        ):
+            raise ValueError("The archive contains an invalid file path.")
+
+        relative_path = PurePosixPath(*parts)
+        target = (root / Path(*relative_path.parts)).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as error:
+            raise ValueError("The archive contains an invalid file path.") from error
+
+        mode = member.external_attr >> 16
+        file_type = stat.S_IFMT(mode)
+        if file_type == stat.S_IFLNK:
+            raise ValueError("The archive contains a symbolic link.")
+        if file_type not in (0, stat.S_IFREG, stat.S_IFDIR):
+            raise ValueError("The archive contains an unsupported file type.")
+
+        canonical_path = "/".join(relative_path.parts).casefold()
+        if canonical_path in seen_paths:
+            raise ValueError("The archive contains duplicate file paths.")
+        seen_paths.add(canonical_path)
+
+        if member.file_size < 0 or member.file_size > max_member_size:
+            raise ValueError("The archive contains a file that is too large.")
+        if not member.is_dir():
+            total_size += member.file_size
+            if total_size > max_total_size:
+                raise ValueError("The archive expands beyond the 4 GB restore limit.")
+        validated_members.append((member, relative_path.parts))
+
+    with tempfile.TemporaryDirectory(prefix=".robustnotes-restore-", dir=root) as staging_name:
+        staging = Path(staging_name)
+        actual_total_size = 0
+        for member, relative_parts in validated_members:
+            staged_path = staging.joinpath(*relative_parts)
+            if member.is_dir():
+                staged_path.mkdir(parents=True, exist_ok=True)
+                continue
+            staged_path.parent.mkdir(parents=True, exist_ok=True)
+            member_size = 0
+            with archive.open(member, "r") as source, staged_path.open("xb") as target_file:
+                while chunk := source.read(1024 * 1024):
+                    member_size += len(chunk)
+                    actual_total_size += len(chunk)
+                    if member_size > max_member_size or actual_total_size > max_total_size:
+                        raise ValueError("The archive expands beyond the safe restore size limit.")
+                    target_file.write(chunk)
+            if member_size != member.file_size:
+                raise ValueError("An archive entry's size does not match its metadata.")
+
+        for staged_path in staging.rglob("*"):
+            if staged_path.is_dir():
+                continue
+            relative_path = staged_path.relative_to(staging)
+            target = (root / relative_path).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError as error:
+                raise ValueError("The archive contains an invalid file path.") from error
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged_path, target)
 
 from PySide6.QtCore import Qt, QEvent, QPointF, QRectF, QSize, QSizeF, QMarginsF, Signal, QTimer, QBuffer, QIODevice, QThread, QSettings, QStandardPaths, QUrl
 from PySide6.QtGui import (
@@ -4684,11 +4773,7 @@ class WorkspaceWindow(QMainWindow):
                 window.close()
         try:
             with zipfile.ZipFile(snapshot) as archive:
-                for member in archive.infolist():
-                    target = (self.workspace_dir / member.filename).resolve()
-                    if not target.is_relative_to(self.workspace_dir.resolve()):
-                        raise ValueError("The recovery snapshot contains an invalid file path.")
-                archive.extractall(self.workspace_dir)
+                restore_workspace_archive(archive, self.workspace_dir)
             self.refresh_documents()
             QMessageBox.information(self, "Version restored", "The selected version is ready to reopen.")
         except (OSError, zipfile.BadZipFile, ValueError) as error:
@@ -4764,11 +4849,7 @@ class WorkspaceWindow(QMainWindow):
                 for window in list(self.open_windows):
                     window.close()
             with zipfile.ZipFile(io.BytesIO(archive_data)) as archive:
-                for member in archive.infolist():
-                    target = (self.workspace_dir / member.filename).resolve()
-                    if not target.is_relative_to(self.workspace_dir.resolve()):
-                        raise ValueError("The backup contains an invalid file path.")
-                archive.extractall(self.workspace_dir)
+                restore_workspace_archive(archive, self.workspace_dir)
             self.load_workspace_index()
             self.refresh_documents()
             QMessageBox.information(self, "Restore complete", "The backup contents were restored to this profile's local workspace.")

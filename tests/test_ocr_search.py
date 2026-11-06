@@ -1,6 +1,8 @@
 import io
 import json
+import stat
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -102,6 +104,61 @@ class OCRAndSearchTests(unittest.TestCase):
             self.assertIn("photosynthesis", searchable)
             self.assertIn("chemical energy", searchable)
             self.assertIn("cell energy", searchable)
+
+    def test_workspace_archive_rejects_traversal_before_extracting(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "unsafe.zip"
+            destination = root / "workspace"
+            destination.mkdir()
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("..\\outside.txt", "should not be extracted")
+            with zipfile.ZipFile(archive_path) as archive:
+                with self.assertRaisesRegex(ValueError, "invalid file path"):
+                    canvas_app.restore_workspace_archive(archive, destination)
+            self.assertFalse((root / "outside.txt").exists())
+
+    def test_workspace_archive_accepts_normal_workspace_paths(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "safe.zip"
+            destination = root / "workspace"
+            destination.mkdir()
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("notes/biology.rnote", "{}")
+                archive.writestr("notes_assets/page.png", b"image")
+            with zipfile.ZipFile(archive_path) as archive:
+                canvas_app.restore_workspace_archive(archive, destination)
+            self.assertEqual((destination / "notes" / "biology.rnote").read_text(encoding="utf-8"), "{}")
+            self.assertEqual((destination / "notes_assets" / "page.png").read_bytes(), b"image")
+
+    def test_workspace_archive_rejects_symlinks(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "symlink.zip"
+            destination = root / "workspace"
+            destination.mkdir()
+            link = zipfile.ZipInfo("notes/link.rnote")
+            link.create_system = 3
+            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(link, "../../outside.rnote")
+            with zipfile.ZipFile(archive_path) as archive:
+                with self.assertRaisesRegex(ValueError, "symbolic link"):
+                    canvas_app.restore_workspace_archive(archive, destination)
+
+    def test_workspace_archive_rejects_oversized_entries(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "large.zip"
+            destination = root / "workspace"
+            destination.mkdir()
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("notes.rnote", "small")
+            with zipfile.ZipFile(archive_path) as archive:
+                archive.getinfo("notes.rnote").file_size = 2 * 1024**3 + 1
+                with self.assertRaisesRegex(ValueError, "too large"):
+                    canvas_app.restore_workspace_archive(archive, destination)
 
 
 if __name__ == "__main__":

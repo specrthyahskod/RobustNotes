@@ -14,10 +14,27 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     # OCR model runtimes are optional and would make the base installer enormous.
-    excludes=["torch", "transformers", "faster_whisper", "cv2", "numpy", "pandas", "scipy", "matplotlib"],
+    # Pillow is optional with the OCR stack. Do not silently freeze the
+    # developer machine's version into the base app; OCR users install the
+    # security-current version from ocr-requirements.txt.
+    excludes=["torch", "transformers", "faster_whisper", "cv2", "numpy", "PIL", "pandas", "scipy", "matplotlib"],
     noarchive=False,
     optimize=1,
 )
+# PyInstaller can discover unrelated Windows runtime DLLs from tools installed
+# on PATH (for example, libheif's ucrtbase and Poppler's ICU 78 libraries). The
+# bootloader/Qt then load those ahead of the matching Windows runtime, causing
+# QtCore to fail with "The specified procedure could not be found". Keep the
+# serviced Universal CRT and Windows ICU on the target system; retain ICU only
+# if it is explicitly supplied by the PySide6 wheel itself.
+a.binaries = [
+    entry for entry in a.binaries
+    if Path(entry[0]).name.casefold() != "ucrtbase.dll"
+    and not (
+        Path(entry[0]).name.casefold().startswith("icu")
+        and not any(part.casefold() == "pyside6" for part in Path(entry[1]).parts)
+    )
+]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
