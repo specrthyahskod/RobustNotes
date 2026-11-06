@@ -93,9 +93,9 @@ These are RobustNotes' product priorities and the way its features are put toget
 | Windows desktop | PySide6 app; Windows app bundle can be built with PyInstaller |
 | Windows installer | Inno Setup definition and build script are included |
 | Linux desktop | Run from Python or build on Linux with PyInstaller; builds must be made on the target OS |
-| Android | Native Kotlin/Jetpack Compose starter with local text-note create, edit, and delete |
+| Android | Native Kotlin/Jetpack Compose offline text-notes app with create, edit, search, and delete |
 
-The Android app is an early companion-app shell, not desktop feature parity. Its next milestones are a touch/stylus canvas, PDF support, OCR, and encrypted backup. Android builds need Android Studio/SDK 35 and JDK 17 or a compatible newer JDK.
+The Android app is an initial text-notes release, not desktop feature parity. It currently has no handwritten notebook canvas, PDF support, OCR, AI chat, or whiteboards. It targets API 36 for new Play Store submissions. Android builds need Android SDK Platform 36 and JDK 17 or 21.
 
 ## Run from source
 
@@ -159,14 +159,14 @@ The app bundle is created under `dist/RobustNotes`.
 
 ### Android debug APK
 
-The Gradle wrapper and Android project are under `mobile/android`. Install Android SDK Platform 35, set the local `sdk.dir` in `mobile/android/local.properties` if Android Studio has not created it, then run:
+The Gradle wrapper and Android project are under `mobile/android`. Install Android SDK Platform 36 and JDK 17 or 21, set `ANDROID_HOME` (or machine-local `sdk.dir` in `mobile/android/local.properties`) if Android Studio has not configured the SDK, then run:
 
 ```powershell
 Set-Location .\mobile\android
 .\gradlew.bat assembleDebug
 ```
 
-The debug APK is written to `app\build\outputs\apk\debug\app-debug.apk`. See [mobile/README.md](mobile/README.md) for details.
+The debug APK is written to `app\build\outputs\apk\debug\app-debug.apk`. For a Play Store AAB and signing setup, see [mobile/README.md](mobile/README.md).
 
 ## Keyboard shortcuts
 
