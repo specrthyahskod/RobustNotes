@@ -143,7 +143,7 @@ Install Inno Setup 6, ensure `ISCC.exe` is available on `PATH`, then run from th
 .\packaging\build_windows.ps1
 ```
 
-The portable application bundle is placed in `dist\RobustNotes`. The installer is written to `packaging\output\RobustNotes-Setup-0.1.0.exe`. The base bundle omits the optional OCR runtime to keep its size manageable; see `packaging/README.md` and `ocr-requirements.txt`.
+The portable application bundle is placed in `dist\RobustNotes`. The setup installer is written to `packaging\output\RobustNotes-Setup-0.1.0.exe`; use that file for a normal installation. `RobustNotes.exe` inside `dist\RobustNotes` is the launcher and requires the neighboring `_internal` folder. The base bundle omits the optional OCR runtime to keep its size manageable; see `packaging/README.md` and `ocr-requirements.txt`.
 
 ### Linux application bundle
 
