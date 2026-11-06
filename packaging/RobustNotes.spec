@@ -28,7 +28,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # Keep Qt's native DLLs untouched; altering these can break QtCore imports
+    # on machines without the exact development environment used to build.
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -37,4 +39,4 @@ exe = EXE(
     entitlements_file=None,
     icon=str(ASSETS / "robustnotes-icon.ico"),
 )
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True, name="RobustNotes")
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="RobustNotes")
