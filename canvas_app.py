@@ -1849,9 +1849,12 @@ class NotebookWindow(QMainWindow):
         colors_layout.addWidget(self.swatch_container)
         layout.addWidget(colors_panel)
 
-        self.custom_color_btn = QPushButton("＋")
+        self.custom_color_btn = QPushButton()
         self.custom_color_btn.setObjectName("IconButton")
         self.custom_color_btn.setFixedSize(34, 34)
+        self.custom_color_btn.setIcon(self.make_action_icon("PLUS"))
+        self.custom_color_btn.setIconSize(QSize(18, 18))
+        self.custom_color_btn.setAccessibleName("Custom ink colour")
         self.custom_color_btn.setToolTip("Choose a custom ink colour")
         self.custom_color_btn.clicked.connect(self.open_color_dialog)
         layout.addWidget(self.custom_color_btn)
@@ -1881,9 +1884,12 @@ class NotebookWindow(QMainWindow):
         self.theme_combo.currentTextChanged.connect(self.apply_theme)
         layout.addWidget(self.theme_combo)
 
-        more_btn = QPushButton("⋯")
+        more_btn = QPushButton()
         more_btn.setObjectName("IconButton")
         more_btn.setFixedSize(38, 38)
+        more_btn.setIcon(self.make_action_icon("MORE"))
+        more_btn.setIconSize(QSize(20, 20))
+        more_btn.setAccessibleName("More notebook actions")
         more_btn.setToolTip("More notebook actions")
         more_btn.clicked.connect(self.show_more_menu)
         layout.addWidget(more_btn)
@@ -1980,6 +1986,29 @@ class NotebookWindow(QMainWindow):
         painter.end()
         return QIcon(pixmap)
 
+    @staticmethod
+    def make_action_icon(mode: str, color: str = "#D7DEE8") -> QIcon:
+        """Draw common controls without relying on installed font glyphs."""
+        pixmap = QPixmap(48, 48)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(color), 4.0, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        if mode == "PLUS":
+            painter.drawLine(QPointF(24, 11), QPointF(24, 37))
+            painter.drawLine(QPointF(11, 24), QPointF(37, 24))
+        elif mode == "MORE":
+            painter.setBrush(QColor(color))
+            for x in (10, 24, 38):
+                painter.drawEllipse(QPointF(x, 24), 2.4, 2.4)
+        elif mode == "REFRESH":
+            painter.drawArc(QRectF(10, 10, 28, 28), 35 * 16, 300 * 16)
+            painter.drawLine(QPointF(35, 7), QPointF(38, 18))
+            painter.drawLine(QPointF(35, 7), QPointF(25, 10))
+        painter.end()
+        return QIcon(pixmap)
+
     def build_left_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("Sidebar")
@@ -1998,8 +2027,11 @@ class NotebookWindow(QMainWindow):
         heading.addWidget(self.page_count_label)
         layout.addLayout(heading)
 
-        new_page_btn = QPushButton("＋   New page")
+        new_page_btn = QPushButton("New page")
         new_page_btn.setObjectName("NewPageButton")
+        new_page_btn.setIcon(self.make_action_icon("PLUS"))
+        new_page_btn.setIconSize(QSize(16, 16))
+        new_page_btn.setAccessibleName("New page")
         new_page_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         new_page_btn.clicked.connect(self.add_new_page)
         layout.addWidget(new_page_btn)
@@ -4391,7 +4423,12 @@ class WorkspaceWindow(QMainWindow):
         self.document_count = QLabel("")
         self.document_count.setObjectName("Muted")
         section.addWidget(self.document_count)
-        refresh = QPushButton("↻")
+        refresh = QPushButton()
+        refresh.setObjectName("IconButton")
+        refresh.setFixedSize(40, 40)
+        refresh.setIcon(NotebookWindow.make_action_icon("REFRESH"))
+        refresh.setIconSize(QSize(18, 18))
+        refresh.setAccessibleName("Refresh recent work")
         refresh.setToolTip("Refresh recent work")
         refresh.clicked.connect(self.refresh_documents)
         section.addWidget(refresh)

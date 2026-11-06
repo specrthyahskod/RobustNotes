@@ -58,10 +58,18 @@ def embed_site_capture(image_path, html_image_path):
     data_uri = "data:image/webp;base64," + base64.b64encode(encoded_image).decode("ascii")
     index_path = ROOT / "index.html"
     markup = index_path.read_text(encoding="utf-8")
-    pattern = rf'<img src="{re.escape(html_image_path)}" data-fallback="[^"]+"'
-    markup, replacements = re.subn(pattern, f'<img src="{data_uri}"', markup, count=1)
-    if replacements != 1:
+    capture_key = html_image_path.rsplit("/", 1)[-1].removesuffix(".png")
+    alt_key = "handwriting OCR review dialog" if capture_key == "ocr-review" else "AI sidebar open beside"
+    tags = list(re.finditer(r"<img\b[^>]*>", markup))
+    target = next((match for match in tags if alt_key in match.group(0)), None)
+    if target is None:
         raise RuntimeError(f"Could not find the website image tag for {html_image_path}.")
+    tag = target.group(0)
+    tag = re.sub(r'src="[^"]*"', f'src="{data_uri}"', tag, count=1)
+    tag = re.sub(r'\sdata-fallback="[^"]*"', "", tag, count=1)
+    if "data-capture=" not in tag:
+        tag = tag[:-1] + f' data-capture="{html_image_path}">'
+    markup = markup[:target.start()] + tag + markup[target.end():]
     index_path.write_text(markup, encoding="utf-8")
 
 
