@@ -119,9 +119,11 @@
     .download-panel { padding: clamp(28px, 5.2vw, 56px); display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: center; border: 1px solid rgba(100, 218, 231, .27); border-radius: 24px; background: radial-gradient(ellipse at 90% 0%, rgba(60, 196, 212, .17), transparent 26rem), linear-gradient(140deg, #142330, #101925 65%); box-shadow: var(--shadow); }
     .download-panel h2 { max-width: 640px; margin-top: 13px; }
     .download-panel p { margin-bottom: 0; max-width: 620px; color: var(--muted); }
-    .download-actions { display: grid; width: min(100%, 360px); justify-items: end; gap: 10px; }
-    .download-actions .button { width: 100%; justify-content: center; }
-    .download-note { max-width: 360px; text-align: right; line-height: 1.5; }
+    .download-actions { display: grid; width: min(100%, 520px); justify-items: stretch; gap: 12px; }
+    .download-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .download-option { display: grid; align-content: start; gap: 9px; min-width: 0; }
+    .download-option .button { width: 100%; min-height: 54px; justify-content: center; text-align: center; }
+    .download-note { max-width: 520px; text-align: right; line-height: 1.5; }
     .small-link { color: #aab9c8; font-size: .82rem; }
     .platform-label { display: inline-flex; gap: 9px; align-items: center; color: #a6b7c8; font-size: .84rem; }
     .platform-label b { color: var(--cyan-2); }
@@ -155,6 +157,7 @@
     }
     @media (max-width: 640px) {
       .wrap { width: min(100% - 34px, 1160px); }
+      .download-buttons { grid-template-columns: 1fr; }
       .nav { min-height: 68px; }
       .brand img { width: 158px; max-height: 40px; }
       .menu-toggle { display: inline-flex; }
@@ -343,10 +346,16 @@
             <p>Get the Windows x64 bundle or try the Android preview. Android currently includes private, on-device text notes and search; the desktop canvas, PDF, OCR, and AI features are not available there yet.</p>
           </div>
           <div class="download-actions">
-            <a class="button button-primary" href="https://github.com/specrthyahskod/RobustNotes-/releases/latest/download/RobustNotes-Windows-x64.zip"><span aria-hidden="true">↓</span> Download Windows bundle</a>
-            <span class="platform-label"><b>●</b> Windows 10 / 11 · x64 · 83.5 MB</span>
-            <a class="button button-secondary" href="downloads/RobustNotes-Android-preview.apk" download aria-label="Download the RobustNotes Android preview APK"><span aria-hidden="true">↓</span> Download Android preview</a>
-            <span class="platform-label"><b>●</b> Android 8.0+ · APK · 9.1 MB</span>
+            <div class="download-buttons">
+              <div class="download-option">
+                <a class="button button-primary" href="https://github.com/specrthyahskod/RobustNotes-/releases/latest/download/RobustNotes-Windows-x64.zip"><span aria-hidden="true">↓</span> Download Windows</a>
+                <span class="platform-label"><b>●</b> Windows 10 / 11 · x64 · 83.5 MB</span>
+              </div>
+              <div class="download-option">
+                <a class="button button-secondary" href="downloads/RobustNotes-Android-preview.apk" download aria-label="Download the RobustNotes Android preview APK"><span aria-hidden="true">↓</span> Download Android</a>
+                <span class="platform-label"><b>●</b> Android 8.0+ · APK · 9.1 MB</span>
+              </div>
+            </div>
             <span class="download-note">Experimental sideload preview, signed with a development key. Not the Play Store release.</span>
             <a class="small-link" href="https://github.com/specrthyahskod/RobustNotes-/releases">View all releases and source</a>
           </div>
