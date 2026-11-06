@@ -136,6 +136,9 @@
     .footer-links { display: flex; gap: 20px; flex-wrap: wrap; }
     .footer-links a { text-decoration: none; color: #b4c1cf; }
     .footer-links a:hover { color: var(--cyan-2); }
+    .footer-links a.with-icon { display: inline-flex; align-items: center; gap: 8px; }
+    .footer-links .social-icon { width: 17px; height: 17px; flex: 0 0 auto; }
+    .footer-links .gmail-icon { width: 19px; height: 17px; }
     @media (max-width: 900px) {
       .hero { padding-top: 63px; }
       .hero-grid { grid-template-columns: 1fr; gap: 52px; }
@@ -367,9 +370,25 @@
     <div class="wrap footer-row">
       <span>© <span id="year">2026</span> RobustNotes. A clearer space to think.</span>
       <nav class="footer-links" aria-label="Footer navigation">
-        <a href="https://github.com/specrthyahskod/RobustNotes-">GitHub</a>
+        <a class="with-icon" href="https://github.com/specrthyahskod/RobustNotes-" aria-label="RobustNotes on GitHub" target="_blank" rel="noopener noreferrer">
+          <svg class="social-icon" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.56.1.76-.24.76-.54v-2.1c-3.1.67-3.76-1.32-3.76-1.32-.5-1.28-1.24-1.62-1.24-1.62-1.01-.69.08-.68.08-.68 1.12.08 1.71 1.15 1.71 1.15 1 .1.77 2.44 4.35 1.73.1-.72.39-1.22.7-1.5-2.48-.28-5.09-1.24-5.09-5.52 0-1.22.44-2.22 1.15-3-.12-.28-.5-1.42.11-2.96 0 0 .94-.3 3.05 1.15a10.6 10.6 0 0 1 5.55 0c2.12-1.45 3.05-1.15 3.05-1.15.61 1.54.23 2.68.12 2.96.71.78 1.14 1.78 1.14 3 0 4.29-2.61 5.24-5.1 5.52.4.35.75 1.03.75 2.08v3.26c0 .3.2.65.77.54A11.1 11.1 0 0 0 12 .9Z"/></svg>
+          GitHub
+        </a>
         <a href="https://github.com/specrthyahskod/RobustNotes-/releases">Releases</a>
-        <a href="mailto:support@robustnotes.com">Support</a>
+        <a class="with-icon" href="https://x.com/robustnotes" aria-label="RobustNotes on X" target="_blank" rel="noopener noreferrer">
+          <svg class="social-icon" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M18.9 1.15h3.68L14.54 10.8 24 22.85h-7.4l-5.8-7.59-6.64 7.59H.47l8.59-9.83L0 1.15h7.59l5.24 6.93 6.07-6.93Zm-1.29 19.57h2.04L6.4 3.16H4.21l13.4 17.56Z"/></svg>
+          X
+        </a>
+        <a class="with-icon" href="mailto:support@robustnotes.com" aria-label="Email RobustNotes support">
+          <svg class="social-icon gmail-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#4285F4" d="M3 6.6v11.1c0 .8.6 1.4 1.4 1.4H7V9.4L3.8 7.1A1.4 1.4 0 0 0 3 6.6Z"/>
+            <path fill="#34A853" d="M17 19.1h2.6c.8 0 1.4-.6 1.4-1.4V6.6c-.3 0-.6.1-.8.3L17 9.4v9.7Z"/>
+            <path fill="#FBBC04" d="M17 9.4v3.1l4-3V6.6c0-1.2-1.4-1.9-2.4-1.2L17 6.5v2.9Z"/>
+            <path fill="#EA4335" d="M3 6.6v2.9l4 3V6.5L5.4 5.4C4.4 4.7 3 5.4 3 6.6Z"/>
+            <path fill="#C5221F" d="M7 6.5v6l5 3.7 5-3.7v-6l-5 3.7-5-3.7Z"/>
+          </svg>
+          Support
+        </a>
         <a href="LICENSE">License</a>
       </nav>
     </div>
