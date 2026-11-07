@@ -25,7 +25,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import Any, Optional, Sequence, TypedDict
+from typing import Any, Optional, Sequence, TypedDict, cast
 from urllib.parse import urlencode, urlparse
 
 
@@ -1013,8 +1013,8 @@ class ResizablePixmapItem(QGraphicsPixmapItem):
             self.HANDLE_SIZE,
         )
 
-    def paint(self, painter: QPainter, option, widget=None) -> None:
-        super().paint(painter, option, widget)
+    def paint(self, painter: QPainter, option, widget: Optional[QWidget] = None) -> None:
+        super().paint(painter, option, cast(QWidget, widget))
         if self.isSelected():
             bounds = self.boundingRect().adjusted(1, 1, -1, -1)
             painter.save()
@@ -1354,7 +1354,7 @@ class SmoothCanvasView(QGraphicsView):
                 event.accept()
                 return
             owner = self.window()
-            if hasattr(owner, "add_text_box"):
+            if isinstance(owner, NotebookWindow):
                 owner.add_text_box(scene_pos, begin_edit=True)
                 event.accept()
                 return
@@ -1817,7 +1817,7 @@ class SmoothCanvasView(QGraphicsView):
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
         ):
             owner = self.window()
-            if hasattr(owner, "paste_clipboard_content") and owner.paste_clipboard_content():
+            if isinstance(owner, NotebookWindow) and owner.paste_clipboard_content():
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -4195,7 +4195,14 @@ class NotebookWindow(QMainWindow):
                         continue
                     if drawing.get("kind") in ("text", "canvas-text"):
                         text_value = str(drawing.get("text", ""))
-                        item = CanvasTextItem(text_value) if drawing.get("kind") == "canvas-text" else QGraphicsTextItem(text_value)
+                        is_canvas_text = drawing.get("kind") == "canvas-text"
+                        if is_canvas_text:
+                            item = CanvasTextItem(text_value)
+                            item.setData(0, "CANVAS_TEXT")
+                            item.content_changed.connect(self.schedule_document_save)
+                        else:
+                            item = QGraphicsTextItem(text_value)
+                            item.setData(0, "OCR_CURSIVE_TEXT")
                         font = QFont(str(drawing.get("font_family", "Segoe Script")))
                         font.setStyleHint(QFont.StyleHint.Cursive)
                         try:
@@ -4207,11 +4214,6 @@ class NotebookWindow(QMainWindow):
                             font.setPointSize(18)
                         item.setFont(font)
                         item.setDefaultTextColor(QColor(str(drawing.get("color", "#24333D"))))
-                        if drawing.get("kind") == "canvas-text":
-                            item.setData(0, "CANVAS_TEXT")
-                            item.content_changed.connect(self.schedule_document_save)
-                        else:
-                            item.setData(0, "OCR_CURSIVE_TEXT")
                         item.setFlags(
                             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
                             | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
