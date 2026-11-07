@@ -1,5 +1,5 @@
 #define AppName "RobustNotes"
-#define AppVersion "0.1.1"
+#define AppVersion "0.1.2"
 #define AppPublisher "RobustNotes"
 #define AppExeName "RobustNotes.exe"
 
@@ -19,6 +19,7 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64
+CloseApplications=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked

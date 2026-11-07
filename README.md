@@ -61,6 +61,8 @@ These are RobustNotes' product priorities and the way its features are put toget
 - Pressure-sensitive pen input on compatible stylus devices; the mouse continues to work as usual.
 - Freehand shape snapping for common geometric sketches.
 - On-canvas calculator, scale/ruler, and compass.
+- Paste images from the clipboard or insert an image file; move and resize images from their selection handle.
+- Add movable text boxes to notebook and whiteboard pages, then double-click a box to edit it.
 - Import PDF pages into a notebook, annotate them, and export notebooks as PDFs or individual pages as PNG images.
 - Recognize handwriting with the optional local TrOCR-based OCR stack. Review and edit the transcription in a cursive-style preview before saving it as searchable page context.
 - Create cloze-style study cards from selected pages with PDF or recognized text.
@@ -143,7 +145,7 @@ Install Inno Setup 6, ensure `ISCC.exe` is available on `PATH`, then run from th
 .\packaging\build_windows.ps1
 ```
 
-The portable application bundle is placed in `dist\RobustNotes`. The setup installer is written to `packaging\output\RobustNotes-Setup-0.1.0.exe`; use that file for a normal installation. `RobustNotes.exe` inside `dist\RobustNotes` is the launcher and requires the neighboring `_internal` folder. The base bundle omits the optional OCR runtime to keep its size manageable; see `packaging/README.md` and `ocr-requirements.txt`.
+The portable application bundle is placed in `dist\RobustNotes`. The setup installer is written to `packaging\output\RobustNotes-Setup-0.1.2.exe`; use that file for a normal installation. Installed Windows builds can check GitHub Releases from the editor's overflow menu and download an update installer, which updates the app in place and keeps local profiles and documents. To publish an update, bump `APP_VERSION` in `canvas_app.py` and `AppVersion` in `packaging/RobustNotes.iss` to the same value, build the installer, then attach `RobustNotes-Setup-<version>.exe` to a stable GitHub Release. `RobustNotes.exe` inside `dist\RobustNotes` is the launcher and requires the neighboring `_internal` folder. The base bundle omits the optional OCR runtime to keep its size manageable; see `packaging/README.md` and `ocr-requirements.txt`.
 
 ### Linux application bundle
 

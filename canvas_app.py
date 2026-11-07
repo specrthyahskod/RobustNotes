@@ -13,6 +13,7 @@ import sys
 import secrets
 import shutil
 import stat
+import subprocess
 import tempfile
 import threading
 import urllib.error
@@ -26,6 +27,10 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Optional, Sequence, TypedDict
 from urllib.parse import urlencode, urlparse
+
+
+APP_VERSION = "0.1.2"
+UPDATE_REPOSITORY = "specrthyahskod/RobustNotes-"
 
 
 def restore_workspace_archive(archive: zipfile.ZipFile, destination: Path) -> None:
@@ -130,6 +135,8 @@ from PySide6.QtGui import (
     QFont,
     QIntValidator,
     QPdfWriter,
+    QDesktopServices,
+    QImageReader,
     QPageSize,
     QPageLayout,
 )
@@ -219,6 +226,116 @@ except ImportError:
     QAudioOutput = None
     QMediaPlayer = None
     HAS_MEDIA_PLAYBACK = False
+
+
+def release_version_tuple(value: str) -> tuple[int, ...]:
+    """Parse a stable numeric release version, tolerating a leading v."""
+    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", value.strip())
+    if not match:
+        raise ValueError(f"Unsupported release version: {value}")
+    parts = [int(part) for part in match.group(1).split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+class UpdateCheckWorker(QThread):
+    update_available = Signal(str, str, str)
+    up_to_date = Signal()
+    request_failed = Signal(str)
+
+    def __init__(self, current_version: str):
+        super().__init__()
+        self.current_version = current_version
+
+    def run(self) -> None:
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "RobustNotes-Updater"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                release = json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
+            if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+                raise RuntimeError("GitHub did not return a stable published release.")
+            tag = str(release.get("tag_name", ""))
+            if release_version_tuple(tag) <= release_version_tuple(self.current_version):
+                self.up_to_date.emit()
+                return
+            assets = release.get("assets", [])
+            if not isinstance(assets, list):
+                raise RuntimeError("The latest release has an invalid asset list.")
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                name = str(asset.get("name", ""))
+                url = str(asset.get("browser_download_url", ""))
+                if name.casefold().endswith(".exe") and name.casefold().startswith("robustnotes-setup-"):
+                    parsed = urlparse(url)
+                    if parsed.scheme != "https" or parsed.hostname != "github.com":
+                        raise RuntimeError("The release installer URL is not a trusted GitHub URL.")
+                    digest = str(asset.get("digest", ""))
+                    self.update_available.emit(tag, url, digest)
+                    return
+            raise RuntimeError("The latest release does not include a RobustNotes Windows installer.")
+        except Exception as error:
+            self.request_failed.emit(f"Could not check for updates: {error}")
+
+
+class UpdateDownloadWorker(QThread):
+    installer_ready = Signal(str)
+    request_failed = Signal(str)
+
+    def __init__(self, version: str, url: str, expected_digest: str):
+        super().__init__()
+        self.version = version
+        self.url = url
+        self.expected_digest = expected_digest
+
+    def run(self) -> None:
+        temporary_path = ""
+        try:
+            safe_version = re.sub(r"[^0-9A-Za-z.-]", "", self.version)
+            request = urllib.request.Request(
+                self.url,
+                headers={"Accept": "application/octet-stream", "User-Agent": "RobustNotes-Updater"},
+            )
+            digest = hashlib.sha256()
+            with urllib.request.urlopen(request, timeout=60) as response:
+                final_host = urlparse(response.geturl()).hostname or ""
+                if not (final_host == "github.com" or final_host.endswith(".githubusercontent.com")):
+                    raise RuntimeError("The installer download redirected to an untrusted host.")
+                content_length = int(response.headers.get("Content-Length", "0") or 0)
+                if content_length > 1024**3:
+                    raise RuntimeError("The installer file exceeds the 1 GB safety limit.")
+                with tempfile.NamedTemporaryFile(
+                    prefix=f"RobustNotes-Setup-{safe_version}-", suffix=".exe", delete=False
+                ) as output:
+                    temporary_path = output.name
+                    first_bytes = b""
+                    total = 0
+                    while chunk := response.read(1024 * 1024):
+                        total += len(chunk)
+                        if total > 1024**3:
+                            raise RuntimeError("The installer file exceeds the 1 GB safety limit.")
+                        if not first_bytes:
+                            first_bytes = chunk[:2]
+                        digest.update(chunk)
+                        output.write(chunk)
+            if first_bytes != b"MZ":
+                raise RuntimeError("The downloaded file is not a Windows installer.")
+            if self.expected_digest:
+                algorithm, separator, expected = self.expected_digest.partition(":")
+                if separator and algorithm.casefold() == "sha256" and digest.hexdigest().casefold() != expected.casefold():
+                    raise RuntimeError("The installer checksum does not match the GitHub release metadata.")
+            self.installer_ready.emit(temporary_path)
+        except Exception as error:
+            if temporary_path:
+                try:
+                    os.remove(temporary_path)
+                except OSError:
+                    pass
+            self.request_failed.emit(f"Could not download the update: {error}")
 
 
 class LocalAIChatWorker(QThread):
@@ -849,6 +966,112 @@ class HistoryEntry:
     items: list[QGraphicsItem]
     before: Optional[list[QPointF]] = None
     after: Optional[list[QPointF]] = None
+    before_scales: Optional[list[float]] = None
+    after_scales: Optional[list[float]] = None
+
+
+class CanvasTextItem(QGraphicsTextItem):
+    """Selectable, movable page text that becomes editable on double click."""
+
+    content_changed = Signal()
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self.document().contentsChanged.connect(self.content_changed.emit)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        super().mouseDoubleClickEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().focusOutEvent(event)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self.content_changed.emit()
+
+
+class ResizablePixmapItem(QGraphicsPixmapItem):
+    """A movable image with an aspect-preserving bottom-right resize handle."""
+
+    HANDLE_SIZE = 18.0
+
+    def __init__(self, pixmap: QPixmap):
+        super().__init__(pixmap)
+        self.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self.setAcceptHoverEvents(True)
+        self._resizing = False
+        self._resize_start_scale = 1.0
+        self._resize_start_diagonal = QPointF()
+
+    def _handle_rect(self) -> QRectF:
+        bounds = self.boundingRect()
+        return QRectF(
+            bounds.right() - self.HANDLE_SIZE,
+            bounds.bottom() - self.HANDLE_SIZE,
+            self.HANDLE_SIZE,
+            self.HANDLE_SIZE,
+        )
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        super().paint(painter, option, widget)
+        if self.isSelected():
+            bounds = self.boundingRect().adjusted(1, 1, -1, -1)
+            painter.save()
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor("#38D7E8"), 2.0, Qt.PenStyle.DashLine))
+            painter.drawRect(bounds)
+            painter.setPen(QPen(QColor("#10202C"), 1.5))
+            painter.setBrush(QColor("#43D8E7"))
+            painter.drawRect(self._handle_rect())
+            painter.restore()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self.isSelected() and event.button() == Qt.MouseButton.LeftButton and self._handle_rect().contains(event.pos()):
+            self._resizing = True
+            self._resize_start_scale = self.scale()
+            self._resize_start_diagonal = QPointF(
+                self.pixmap().width() * self._resize_start_scale,
+                self.pixmap().height() * self._resize_start_scale,
+            )
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._resizing:
+            origin = self.mapToScene(QPointF(0, 0))
+            delta = event.scenePos() - origin
+            start = self._resize_start_diagonal
+            denominator = start.x() * start.x() + start.y() * start.y()
+            if denominator > 0:
+                projection = (delta.x() * start.x() + delta.y() * start.y()) / denominator
+                width = max(1, self.pixmap().width())
+                height = max(1, self.pixmap().height())
+                min_scale = 40.0 / max(width, height)
+                max_scale = 10000.0 / max(width, height)
+                self.setScale(max(min_scale, min(max_scale, self._resize_start_scale * projection)))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._resizing:
+            self._resizing = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def hoverMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self.isSelected() and self._handle_rect().contains(event.pos()):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        else:
+            self.setCursor(Qt.CursorShape.OpenHandCursor if self.isSelected() else Qt.CursorShape.ArrowCursor)
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self.unsetCursor()
+        super().hoverLeaveEvent(event)
 
 
 class PageScene(QGraphicsScene):
@@ -879,13 +1102,15 @@ class PageScene(QGraphicsScene):
     def push_action(
         self,
         action: str,
-        items: list[QGraphicsItem],
+        items: Sequence[QGraphicsItem],
         before: Optional[list[QPointF]] = None,
         after: Optional[list[QPointF]] = None,
+        before_scales: Optional[list[float]] = None,
+        after_scales: Optional[list[float]] = None,
     ) -> None:
         if not items:
             return
-        self.undo_stack.append(HistoryEntry(action, list(items), before, after))
+        self.undo_stack.append(HistoryEntry(action, list(items), before, after, before_scales, after_scales))
         if len(self.undo_stack) > self.HISTORY_LIMIT:
             self.undo_stack.pop(0)
         self.redo_stack.clear()
@@ -906,6 +1131,10 @@ class PageScene(QGraphicsScene):
         elif entry.action == "MOVE" and entry.before is not None:
             for item, position in zip(entry.items, entry.before):
                 item.setPos(position)
+        elif entry.action == "TRANSFORM" and entry.before is not None and entry.before_scales is not None:
+            for item, position, scale in zip(entry.items, entry.before, entry.before_scales):
+                item.setPos(position)
+                item.setScale(scale)
         elif entry.action == "REPLACE" and entry.items:
             replacement = entry.items[-1]
             if replacement.scene() is self:
@@ -933,6 +1162,10 @@ class PageScene(QGraphicsScene):
         elif entry.action == "MOVE" and entry.after is not None:
             for item, position in zip(entry.items, entry.after):
                 item.setPos(position)
+        elif entry.action == "TRANSFORM" and entry.after is not None and entry.after_scales is not None:
+            for item, position, scale in zip(entry.items, entry.after, entry.after_scales):
+                item.setPos(position)
+                item.setScale(scale)
         elif entry.action == "REPLACE" and entry.items:
             for item in entry.items[:-1]:
                 if item.scene() is self:
@@ -1000,7 +1233,7 @@ class SmoothCanvasView(QGraphicsView):
         self.shape_has_snapped = False
         self.erased_in_drag: list[QGraphicsItem] = []
         self.lasso_path_item: Optional[QGraphicsPathItem] = None
-        self.moving_items_before: Optional[list[tuple[QGraphicsItem, QPointF]]] = None
+        self.moving_items_before: Optional[list[tuple[QGraphicsItem, QPointF, float]]] = None
 
     def current_page_scene(self) -> Optional[PageScene]:
         scene = self.scene()
@@ -1113,6 +1346,19 @@ class SmoothCanvasView(QGraphicsView):
 
         scene_pos = self.mapToScene(event.position().toPoint())
 
+        if self.current_mode == "TEXT":
+            hit_item = scene.itemAt(scene_pos, self.transform())
+            if isinstance(hit_item, CanvasTextItem):
+                hit_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+                hit_item.setFocus(Qt.FocusReason.MouseFocusReason)
+                event.accept()
+                return
+            owner = self.window()
+            if hasattr(owner, "add_text_box"):
+                owner.add_text_box(scene_pos, begin_edit=True)
+                event.accept()
+                return
+
         # In lasso mode, clicking an existing item selects/moves it. Dragging
         # empty canvas starts a new lasso selection.
         if self.current_mode == "LASSO":
@@ -1122,7 +1368,7 @@ class SmoothCanvasView(QGraphicsView):
                     scene.clearSelection()
                 super().mousePressEvent(event)
                 self.moving_items_before = [
-                    (selected, QPointF(selected.pos()))
+                    (selected, QPointF(selected.pos()), selected.scale())
                     for selected in scene.selectedItems()
                     if selected is not scene.bg_item
                 ]
@@ -1230,14 +1476,22 @@ class SmoothCanvasView(QGraphicsView):
                 changed_items: list[QGraphicsItem] = []
                 before_positions: list[QPointF] = []
                 after_positions: list[QPointF] = []
-                for item, old_pos in self.moving_items_before:
+                before_scales: list[float] = []
+                after_scales: list[float] = []
+                for item, old_pos, old_scale in self.moving_items_before:
                     new_pos = QPointF(item.pos())
-                    if (new_pos - old_pos).manhattanLength() > 0.01:
+                    new_scale = item.scale()
+                    if (new_pos - old_pos).manhattanLength() > 0.01 or abs(new_scale - old_scale) > 0.0001:
                         changed_items.append(item)
                         before_positions.append(old_pos)
                         after_positions.append(new_pos)
+                        before_scales.append(old_scale)
+                        after_scales.append(new_scale)
                 if changed_items:
-                    scene.push_action("MOVE", changed_items, before_positions, after_positions)
+                    scene.push_action(
+                        "TRANSFORM", changed_items, before_positions, after_positions,
+                        before_scales, after_scales,
+                    )
                     self.stroke_completed.emit()
             self.moving_items_before = None
             event.accept()
@@ -1558,6 +1812,14 @@ class SmoothCanvasView(QGraphicsView):
             self.delete_selected_items()
             event.accept()
             return
+        if (
+            event.key() == Qt.Key.Key_V
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            owner = self.window()
+            if hasattr(owner, "paste_clipboard_content") and owner.paste_clipboard_content():
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -1752,6 +2014,7 @@ class NotebookWindow(QMainWindow):
         self.template_pixmap = self.make_whiteboard_template() if document_type == "whiteboard" else self.make_notebook_template(self.load_or_create_template(), template_name)
         self.pages: list[PageScene] = []
         self._saved_page_image_keys: dict[Path, int] = {}
+        self._saved_canvas_image_keys: dict[Path, int] = {}
         self.imported_pdf_texts: list[tuple[str, str]] = []
         self.ai_history: list[dict[str, str]] = []
         self.calculator_dialog: Optional[CalculatorDialog] = None
@@ -1772,6 +2035,8 @@ class NotebookWindow(QMainWindow):
             str(self.ai_settings.value("aiModel", "robustnotes-slm")),
         )
         self.ai_worker: Optional[LocalAIChatWorker] = None
+        self.update_check_worker: Optional[UpdateCheckWorker] = None
+        self.update_download_worker: Optional[UpdateDownloadWorker] = None
         self.ocr_worker: Optional[HandwritingOCRWorker] = None
         self.ocr_target_scene: Optional[PageScene] = None
         self.ocr_target_items: Sequence[QGraphicsItem] = ()
@@ -1896,6 +2161,8 @@ class NotebookWindow(QMainWindow):
             ("LINE", "Line", "I"),
             ("SHAPE", "Shapes", "S"),
             ("LASSO", "Select", "L"),
+            ("TEXT", "Text box", "T"),
+            ("IMAGE", "Insert image", ""),
         ]
         tool_deck = QWidget()
         tool_deck.setObjectName("ToolDeck")
@@ -1905,14 +2172,18 @@ class NotebookWindow(QMainWindow):
         for mode, label, shortcut in tools:
             button = QPushButton()
             button.setObjectName("ToolButton")
-            button.setCheckable(True)
+            button.setCheckable(mode != "IMAGE")
             button.setFixedSize(44, 44)
             button.setIcon(self.make_tool_icon(mode))
             button.setIconSize(QSize(25, 25))
             button.setAccessibleName(label)
             button.setToolTip(f"{label}  ·  {shortcut}")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.clicked.connect(lambda checked=False, selected=mode: self.select_tool(selected))
+            button.clicked.connect(
+                lambda checked=False, selected=mode: (
+                    self.import_canvas_image() if selected == "IMAGE" else self.select_tool(selected)
+                )
+            )
             tool_layout.addWidget(button)
             self.tool_buttons[mode] = button
         layout.addWidget(tool_deck)
@@ -2049,6 +2320,19 @@ class NotebookWindow(QMainWindow):
             painter.drawPath(path)
             painter.drawLine(QPointF(43, 37), QPointF(51, 44))
             painter.drawEllipse(QPointF(51, 44), 2.5, 2.5)
+        elif mode == "TEXT":
+            painter.setFont(QFont("Segoe UI", 35, QFont.Weight.Bold))
+            painter.drawText(QRectF(12, 6, 40, 48), Qt.AlignmentFlag.AlignCenter, "T")
+            painter.drawLine(QPointF(13, 54), QPointF(51, 54))
+        elif mode == "IMAGE":
+            painter.drawRoundedRect(QRectF(8, 10, 48, 42), 5, 5)
+            painter.drawEllipse(QPointF(42, 21), 3.5, 3.5)
+            path = QPainterPath(QPointF(12, 46))
+            path.lineTo(24, 32)
+            path.lineTo(32, 40)
+            path.lineTo(40, 29)
+            path.lineTo(52, 45)
+            painter.drawPath(path)
         painter.end()
         return QIcon(pixmap)
 
@@ -2832,6 +3116,7 @@ class NotebookWindow(QMainWindow):
             "LINE": "Line tool",
             "SHAPE": "Shape tool",
             "LASSO": "Selection tool",
+            "TEXT": "Text box tool",
             "RULER": "Ruler / scale",
             "COMPASS": "Compass",
         }
@@ -3030,6 +3315,115 @@ class NotebookWindow(QMainWindow):
         if 0 <= index < len(self.pages):
             self.page_list.item(index).setIcon(self.render_scene_thumbnail(self.pages[index]))
 
+    def add_text_box(self, scene_pos: QPointF, begin_edit: bool = False,
+                     text: str = "") -> Optional[CanvasTextItem]:
+        scene = self.canvas.current_page_scene()
+        if scene is None:
+            return None
+        item = CanvasTextItem(text)
+        item.setFont(QFont("Segoe UI", 20))
+        item.setDefaultTextColor(QColor("#172334"))
+        item.setTextWidth(480)
+        item.setPos(scene_pos)
+        item.setZValue(3)
+        item.setData(0, "CANVAS_TEXT")
+        item.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable
+        )
+        item.content_changed.connect(self.schedule_document_save)
+        scene.addItem(item)
+        scene.clearSelection()
+        item.setSelected(True)
+        scene.push_action("ADD", [item])
+        if begin_edit:
+            item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+            item.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.canvas.stroke_completed.emit()
+        return item
+
+    def add_image_to_page(self, pixmap: QPixmap) -> bool:
+        scene = self.canvas.current_page_scene()
+        if scene is None or pixmap.isNull():
+            return False
+        if pixmap.width() * pixmap.height() > 40_000_000:
+            QMessageBox.warning(self, "Image is too large", "Choose an image smaller than 40 megapixels.")
+            return False
+        image = ResizablePixmapItem(pixmap)
+        image_width = max(1, pixmap.width())
+        image_height = max(1, pixmap.height())
+        image.setScale(min(1.0, 720.0 / image_width, 560.0 / image_height))
+        center = self.canvas.mapToScene(self.canvas.viewport().rect().center())
+        image.setPos(
+            center.x() - image_width * image.scale() / 2.0,
+            center.y() - image_height * image.scale() / 2.0,
+        )
+        image.setZValue(2)
+        image.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+        )
+        scene.addItem(image)
+        scene.clearSelection()
+        image.setSelected(True)
+        scene.push_action("ADD", [image])
+        self.select_tool("LASSO")
+        self.canvas.stroke_completed.emit()
+        self.statusBar().showMessage(
+            "Image added · Select it with the lasso, then drag the corner handle to resize", 5000
+        )
+        return True
+
+    def load_canvas_image_file(self, file_path: str) -> QPixmap:
+        reader = QImageReader(file_path)
+        dimensions = reader.size()
+        if dimensions.isValid() and dimensions.width() * dimensions.height() > 40_000_000:
+            QMessageBox.warning(self, "Image is too large", "Choose an image smaller than 40 megapixels.")
+            return QPixmap()
+        image = reader.read()
+        return QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+
+    def import_canvas_image(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Insert image on page",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;All files (*)",
+        )
+        if file_path:
+            pixmap = self.load_canvas_image_file(file_path)
+            if not self.add_image_to_page(pixmap):
+                if pixmap.isNull():
+                    QMessageBox.warning(self, "Could not open image", "The selected file is not a supported image.")
+
+    def paste_clipboard_content(self) -> bool:
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        if mime is None:
+            return False
+        if mime.hasImage():
+            image_data = mime.imageData()
+            if isinstance(image_data, QPixmap):
+                pixmap = QPixmap(image_data)
+            elif isinstance(image_data, QImage):
+                pixmap = QPixmap.fromImage(image_data)
+            else:
+                pixmap = QPixmap.fromImage(QImage(image_data))
+            if self.add_image_to_page(pixmap):
+                return True
+        if mime.hasUrls():
+            for url in mime.urls():
+                if url.isLocalFile():
+                    pixmap = self.load_canvas_image_file(url.toLocalFile())
+                    if not pixmap.isNull():
+                        return self.add_image_to_page(pixmap)
+        if mime.hasText() and mime.text().strip():
+            center = self.canvas.mapToScene(self.canvas.viewport().rect().center())
+            self.add_text_box(center, text=mime.text())
+            return True
+        return False
+
     def schedule_thumbnail_update(self) -> None:
         if hasattr(self, "thumbnail_timer"):
             self.thumbnail_timer.start()
@@ -3223,6 +3617,20 @@ class NotebookWindow(QMainWindow):
                     glow.setColor(item.pen().color())
                     glow.setOffset(0, 0)
                     copied_item.setGraphicsEffect(glow)
+            elif isinstance(item, ResizablePixmapItem):
+                copied_item = ResizablePixmapItem(QPixmap(item.pixmap()))
+                copied_item.setScale(item.scale())
+                copied_item.setPos(item.pos())
+                copied_item.setZValue(item.zValue())
+            elif isinstance(item, CanvasTextItem):
+                copied_item = CanvasTextItem(item.toPlainText())
+                copied_item.setFont(QFont(item.font()))
+                copied_item.setDefaultTextColor(item.defaultTextColor())
+                copied_item.setTextWidth(item.textWidth())
+                copied_item.setPos(item.pos())
+                copied_item.setZValue(item.zValue())
+                copied_item.setData(0, "CANVAS_TEXT")
+                copied_item.content_changed.connect(self.schedule_document_save)
             elif isinstance(item, QGraphicsTextItem) and item.data(0) == "OCR_CURSIVE_TEXT":
                 copied_item = QGraphicsTextItem(item.toPlainText())
                 copied_item.setFont(QFont(item.font()))
@@ -3236,6 +3644,7 @@ class NotebookWindow(QMainWindow):
             copied_item.setFlags(
                 QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
                 | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+                | (QGraphicsItem.GraphicsItemFlag.ItemIsFocusable if isinstance(copied_item, CanvasTextItem) else QGraphicsItem.GraphicsItemFlag(0))
             )
             duplicate.addItem(copied_item)
 
@@ -3332,6 +3741,8 @@ class NotebookWindow(QMainWindow):
         ruler_action.setToolTip("Drag on the page to draw a straight, tick-marked guide")
         compass_action = tools_menu.addAction("Compass")
         compass_action.setToolTip("Drag from the circle centre to set its radius")
+        text_box_action = tools_menu.addAction("Add text box")
+        image_action = tools_menu.addAction("Insert image…")
         menu.addSeparator()
         fit_action = menu.addAction("Fit page to window")
         focus_action = menu.addAction("Toggle focus mode     F11")
@@ -3340,6 +3751,8 @@ class NotebookWindow(QMainWindow):
         music_action = menu.addAction("Open music player…")
         menu.addSeparator()
         delete_action = menu.addAction("Delete current page")
+        menu.addSeparator()
+        updates_action = menu.addAction(f"Check for updates…  ·  v{APP_VERSION}")
         sender = self.sender()
         if not isinstance(sender, QWidget):
             return
@@ -3359,6 +3772,10 @@ class NotebookWindow(QMainWindow):
             self.select_auxiliary_tool("RULER")
         elif chosen == compass_action:
             self.select_auxiliary_tool("COMPASS")
+        elif chosen == text_box_action:
+            self.select_tool("TEXT")
+        elif chosen == image_action:
+            self.import_canvas_image()
         elif chosen == fit_action:
             self.canvas.fit_page()
         elif chosen == focus_action:
@@ -3371,6 +3788,90 @@ class NotebookWindow(QMainWindow):
             self.open_music_player()
         elif chosen == delete_action:
             self.delete_page(self.page_list.currentRow())
+        elif chosen == updates_action:
+            self.check_for_updates()
+
+    def check_for_updates(self) -> None:
+        if self.update_check_worker is not None and self.update_check_worker.isRunning():
+            self.statusBar().showMessage("Already checking for updates…", 2500)
+            return
+        worker = UpdateCheckWorker(APP_VERSION)
+        self.update_check_worker = worker
+        worker.update_available.connect(self.offer_update)
+        worker.up_to_date.connect(
+            lambda: self.statusBar().showMessage(f"RobustNotes v{APP_VERSION} is up to date.", 5000)
+        )
+        worker.request_failed.connect(
+            lambda message: self.statusBar().showMessage(message, 7000)
+        )
+        worker.finished.connect(lambda: setattr(self, "update_check_worker", None))
+        self.statusBar().showMessage("Checking for RobustNotes updates…", 5000)
+        worker.start()
+
+    def offer_update(self, version: str, url: str, digest: str) -> None:
+        if not getattr(sys, "frozen", False):
+            QMessageBox.information(
+                self,
+                "Update available",
+                f"RobustNotes {version} is available. This development copy cannot update itself; open the GitHub release page to download it.",
+            )
+            QDesktopServices.openUrl(QUrl(f"https://github.com/{UPDATE_REPOSITORY}/releases/latest"))
+            return
+        answer = QMessageBox.question(
+            self,
+            "RobustNotes update available",
+            f"Version {version} is ready to download and install.\n\nThe update runs quietly in place and keeps your local profiles and notes. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        worker = UpdateDownloadWorker(version, url, digest)
+        self.update_download_worker = worker
+        worker.installer_ready.connect(self.install_downloaded_update)
+        worker.request_failed.connect(
+            lambda message: QMessageBox.warning(self, "Update failed", message)
+        )
+        worker.finished.connect(lambda: setattr(self, "update_download_worker", None))
+        self.statusBar().showMessage(f"Downloading RobustNotes {version}…", 0)
+        worker.start()
+
+    def install_downloaded_update(self, installer_path: str) -> None:
+        if not getattr(sys, "frozen", False) or sys.platform != "win32":
+            QMessageBox.information(self, "Update downloaded", f"The installer is ready at:\n{installer_path}")
+            return
+        app_path = Path(sys.executable).resolve()
+        if not app_path.is_file():
+            QMessageBox.warning(self, "Update could not start", "The installed RobustNotes launcher could not be found.")
+            return
+        def ps_quote(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+        script_path = Path(tempfile.gettempdir()) / f"robustnotes-update-{os.getpid()}.ps1"
+        installer = str(Path(installer_path).resolve())
+        script = (
+            f"$ErrorActionPreference = 'Stop'\n"
+            f"Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue\n"
+            f"$installer = {ps_quote(installer)}\n"
+            f"$app = {ps_quote(str(app_path))}\n"
+            f"Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS' -Wait\n"
+            f"if (Test-Path -LiteralPath $app) {{ Start-Process -FilePath $app }}\n"
+            f"Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue\n"
+            f"Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\n"
+        )
+        try:
+            script_path.write_text(script, encoding="utf-8")
+            subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as error:
+            QMessageBox.warning(self, "Update could not start", f"Could not launch the installer helper.\n\n{error}")
+            return
+        self.statusBar().showMessage("Installing the update. RobustNotes will restart shortly…", 5000)
+        QTimer.singleShot(250, QApplication.closeAllWindows)
 
     def open_music_player(self) -> None:
         if self.music_dialog is None:
@@ -3526,11 +4027,32 @@ class NotebookWindow(QMainWindow):
                         raise OSError(f"Could not save notebook page background: {image_name}")
                     self._saved_page_image_keys[image_path] = image_key
                 drawings: list[dict[str, object]] = []
+                image_number = 0
                 for item in scene.items(Qt.SortOrder.AscendingOrder):
                     if item is scene.bg_item:
                         continue
                     position = item.pos()
-                    if isinstance(item, QGraphicsPathItem):
+                    if isinstance(item, ResizablePixmapItem):
+                        image_number += 1
+                        image_name = f"page_{page_index + 1:04d}_item_{image_number:04d}.png"
+                        image_path = asset_dir / image_name
+                        image_key = item.pixmap().cacheKey()
+                        if (
+                            not image_path.exists()
+                            or self._saved_canvas_image_keys.get(image_path) != image_key
+                        ):
+                            if not item.pixmap().save(str(image_path), "PNG"):
+                                raise OSError(f"Could not save a pasted image: {image_name}")
+                            self._saved_canvas_image_keys[image_path] = image_key
+                        drawings.append({
+                            "kind": "image",
+                            "image": str(image_path.relative_to(self.document_path.parent)),
+                            "scale": item.scale(),
+                            "x": position.x(),
+                            "y": position.y(),
+                            "z": item.zValue(),
+                        })
+                    elif isinstance(item, QGraphicsPathItem):
                         path = item.path()
                         elements = [
                             [path.elementAt(index).type.value, path.elementAt(index).x, path.elementAt(index).y]
@@ -3543,6 +4065,19 @@ class NotebookWindow(QMainWindow):
                             "color": pen.color().name(QColor.NameFormat.HexArgb),
                             "width": pen.widthF(),
                             "mode": str(item.data(0) or "PEN"),
+                            "x": position.x(),
+                            "y": position.y(),
+                            "z": item.zValue(),
+                        })
+                    elif isinstance(item, CanvasTextItem):
+                        font = item.font()
+                        drawings.append({
+                            "kind": "canvas-text",
+                            "text": item.toPlainText(),
+                            "font_family": font.family(),
+                            "font_size": font.pointSizeF(),
+                            "color": item.defaultTextColor().name(QColor.NameFormat.HexArgb),
+                            "text_width": item.textWidth(),
                             "x": position.x(),
                             "y": position.y(),
                             "z": item.zValue(),
@@ -3639,8 +4174,28 @@ class NotebookWindow(QMainWindow):
                     self._saved_page_image_keys[image_path] = stored_image_key
                 scene.ocr_text = str(page_record.get("ocr_text", ""))
                 for drawing in page_record.get("drawings", []):
-                    if drawing.get("kind") == "text":
-                        item = QGraphicsTextItem(str(drawing.get("text", "")))
+                    if drawing.get("kind") == "image":
+                        image_path = self.document_path.parent / str(drawing.get("image", ""))
+                        image_pixmap = QPixmap(str(image_path)) if image_path.is_file() else QPixmap()
+                        if image_pixmap.isNull():
+                            continue
+                        item = ResizablePixmapItem(image_pixmap)
+                        try:
+                            item.setScale(max(0.001, min(100.0, float(drawing.get("scale", 1.0)))))
+                            item.setPos(float(drawing.get("x", 0.0)), float(drawing.get("y", 0.0)))
+                            item.setZValue(float(drawing.get("z", 2.0)))
+                        except (TypeError, ValueError):
+                            pass
+                        item.setFlags(
+                            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+                            | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+                        )
+                        scene.addItem(item)
+                        self._saved_canvas_image_keys[image_path] = image_pixmap.cacheKey()
+                        continue
+                    if drawing.get("kind") in ("text", "canvas-text"):
+                        text_value = str(drawing.get("text", ""))
+                        item = CanvasTextItem(text_value) if drawing.get("kind") == "canvas-text" else QGraphicsTextItem(text_value)
                         font = QFont(str(drawing.get("font_family", "Segoe Script")))
                         font.setStyleHint(QFont.StyleHint.Cursive)
                         try:
@@ -3652,10 +4207,15 @@ class NotebookWindow(QMainWindow):
                             font.setPointSize(18)
                         item.setFont(font)
                         item.setDefaultTextColor(QColor(str(drawing.get("color", "#24333D"))))
-                        item.setData(0, "OCR_CURSIVE_TEXT")
+                        if drawing.get("kind") == "canvas-text":
+                            item.setData(0, "CANVAS_TEXT")
+                            item.content_changed.connect(self.schedule_document_save)
+                        else:
+                            item.setData(0, "OCR_CURSIVE_TEXT")
                         item.setFlags(
                             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
                             | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+                            | (QGraphicsItem.GraphicsItemFlag.ItemIsFocusable if drawing.get("kind") == "canvas-text" else QGraphicsItem.GraphicsItemFlag(0))
                         )
                         scene.addItem(item)
                         continue
@@ -3895,6 +4455,7 @@ class NotebookWindow(QMainWindow):
             ("I", lambda: self.select_tool("LINE")),
             ("S", lambda: self.select_tool("SHAPE")),
             ("L", lambda: self.select_tool("LASSO")),
+            ("T", lambda: self.select_tool("TEXT")),
         ]
         for sequence, callback in shortcuts:
             shortcut = QShortcut(QKeySequence(sequence), self)
