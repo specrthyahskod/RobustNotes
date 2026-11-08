@@ -29,7 +29,7 @@ from typing import Any, Optional, Sequence, TypedDict, cast
 from urllib.parse import urlencode, urlparse
 
 
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 UPDATE_REPOSITORY = "specrthyahskod/RobustNotes-"
 
 
@@ -139,6 +139,8 @@ from PySide6.QtGui import (
     QImageReader,
     QPageSize,
     QPageLayout,
+    QTextCharFormat,
+    QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -979,6 +981,19 @@ class CanvasTextItem(QGraphicsTextItem):
         super().__init__(text)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.document().contentsChanged.connect(self.content_changed.emit)
+
+    def set_foreground_color(self, color: QColor) -> None:
+        """Apply a color to the selection, or to all text when none is selected."""
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            cursor.select(QTextCursor.SelectionType.Document)
+        if cursor.hasSelection():
+            char_format = QTextCharFormat()
+            char_format.setForeground(color)
+            cursor.mergeCharFormat(char_format)
+            self.setTextCursor(cursor)
+        self.setDefaultTextColor(color)
+        self.content_changed.emit()
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
@@ -3246,16 +3261,21 @@ class NotebookWindow(QMainWindow):
                         button.setChecked(button.text() == ("Freeform" if submode == "FREE" else "Rectangle"))
 
     def set_color(self, color_value: str) -> None:
-        self.canvas.pen_color = QColor(color_value)
+        color = QColor(color_value)
+        if not color.isValid():
+            return
+        self.canvas.pen_color = color
+        for scene in self.pages:
+            for item in scene.selectedItems():
+                if isinstance(item, CanvasTextItem):
+                    item.set_foreground_color(color)
         self.rebuild_swatches()
         self.update_status()
 
     def open_color_dialog(self) -> None:
         color = QColorDialog.getColor(self.canvas.pen_color, self, "Choose ink colour")
         if color.isValid():
-            self.canvas.pen_color = color
-            self.rebuild_swatches()
-            self.update_status()
+            self.set_color(color.name(QColor.NameFormat.HexArgb))
 
     # ----- Page management ----------------------------------------------------
 
@@ -3623,7 +3643,8 @@ class NotebookWindow(QMainWindow):
                 copied_item.setPos(item.pos())
                 copied_item.setZValue(item.zValue())
             elif isinstance(item, CanvasTextItem):
-                copied_item = CanvasTextItem(item.toPlainText())
+                copied_item = CanvasTextItem()
+                copied_item.setHtml(item.toHtml())
                 copied_item.setFont(QFont(item.font()))
                 copied_item.setDefaultTextColor(item.defaultTextColor())
                 copied_item.setTextWidth(item.textWidth())
@@ -4074,6 +4095,7 @@ class NotebookWindow(QMainWindow):
                         drawings.append({
                             "kind": "canvas-text",
                             "text": item.toPlainText(),
+                            "html": item.toHtml(),
                             "font_family": font.family(),
                             "font_size": font.pointSizeF(),
                             "color": item.defaultTextColor().name(QColor.NameFormat.HexArgb),
@@ -4197,7 +4219,12 @@ class NotebookWindow(QMainWindow):
                         text_value = str(drawing.get("text", ""))
                         is_canvas_text = drawing.get("kind") == "canvas-text"
                         if is_canvas_text:
-                            item = CanvasTextItem(text_value)
+                            item = CanvasTextItem()
+                            html_value = drawing.get("html")
+                            if isinstance(html_value, str) and html_value:
+                                item.setHtml(html_value)
+                            else:
+                                item.setPlainText(text_value)
                             item.setData(0, "CANVAS_TEXT")
                             item.content_changed.connect(self.schedule_document_save)
                         else:
@@ -5275,6 +5302,7 @@ class WorkspaceWindow(QMainWindow):
         path = Path(raw_path)
         metadata = self.document_metadata(path)
         menu = QMenu(self)
+        rename = menu.addAction("Rename…")
         favorite = menu.addAction("Remove from favorites" if metadata.get("favorite") else "Add to favorites")
         organize = menu.addAction("Edit tags, folder, and links…")
         history = menu.addAction("Version history…") if path.suffix.lower() in {".rnote", ".rboard"} else None
@@ -5293,7 +5321,9 @@ class WorkspaceWindow(QMainWindow):
                 related_actions[action] = related_path
         related_menu.setEnabled(bool(related_actions))
         chosen = menu.exec(self.documents_list.mapToGlobal(position))
-        if chosen == favorite:
+        if chosen == rename:
+            self.rename_document(path)
+        elif chosen == favorite:
             metadata["favorite"] = not bool(metadata.get("favorite"))
             self.workspace_index[path.name] = metadata
             self.save_workspace_index()
@@ -5304,6 +5334,108 @@ class WorkspaceWindow(QMainWindow):
             self.restore_document_version(path)
         elif chosen in related_actions:
             self.open_selected_document_for_path(related_actions[chosen])
+
+    def rename_document(self, path: Path) -> None:
+        """Rename a workspace document and keep its local assets and links together."""
+        title, accepted = QInputDialog.getText(
+            self, "Rename document", "New name", QLineEdit.EchoMode.Normal, path.stem
+        )
+        if not accepted or not title.strip():
+            return
+        if title.strip() == path.stem:
+            return
+        target = self.unique_path(title, path.suffix)
+        if target == path:
+            return
+        old_asset_dir = path.with_name(f"{path.stem}_assets")
+        new_asset_dir = target.with_name(f"{target.stem}_assets")
+        history_dir = self.workspace_dir / ".robustnotes-recovery"
+        if new_asset_dir.exists():
+            QMessageBox.warning(self, "Name already in use", "A document or its saved files already use that name.")
+            return
+
+        matching_windows = [
+            window for window in self.open_windows
+            if (isinstance(window, NotebookWindow) and window.document_path == path)
+            or (isinstance(window, TextFileWindow) and window.path == path)
+        ]
+        for window in matching_windows:
+            if isinstance(window, NotebookWindow):
+                window.save_document()
+                if window.document_save_timer.isActive():
+                    window.document_save_timer.stop()
+            else:
+                window.save_timer.stop()
+                window.save_file()
+
+        snapshots = sorted(history_dir.glob(f"{path.name}.*.zip")) if history_dir.exists() else []
+        snapshot_moves = [(item, item.with_name(target.name + item.name[len(path.name):])) for item in snapshots]
+        if any(destination.exists() for _, destination in snapshot_moves):
+            QMessageBox.warning(self, "Name already in use", "Saved history already exists for that name.")
+            return
+
+        moved: list[tuple[Path, Path]] = []
+        try:
+            path.rename(target)
+            moved.append((target, path))
+            if old_asset_dir.exists():
+                old_asset_dir.rename(new_asset_dir)
+                moved.append((new_asset_dir, old_asset_dir))
+            for source, destination in snapshot_moves:
+                source.rename(destination)
+                moved.append((destination, source))
+
+            # Stored image references are workspace-relative and include the asset directory name.
+            if target.suffix.lower() in {".rnote", ".rboard"}:
+                payload = json.loads(target.read_text(encoding="utf-8"))
+                old_prefix = f"{path.stem}_assets/"
+                new_prefix = f"{target.stem}_assets/"
+                for page in payload.get("pages", []):
+                    page_image_ref = page.get("image")
+                    if isinstance(page_image_ref, str):
+                        normalized_ref = page_image_ref.replace("\\", "/")
+                        if normalized_ref.startswith(old_prefix):
+                            page["image"] = new_prefix + normalized_ref[len(old_prefix):]
+                    for drawing in page.get("drawings", []):
+                        image_ref = drawing.get("image")
+                        if isinstance(image_ref, str):
+                            normalized_ref = image_ref.replace("\\", "/")
+                            if normalized_ref.startswith(old_prefix):
+                                drawing["image"] = new_prefix + normalized_ref[len(old_prefix):]
+                temp_path = target.with_suffix(target.suffix + ".tmp")
+                temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(temp_path, target)
+
+            record = self.workspace_index.pop(path.name, None)
+            if isinstance(record, dict):
+                self.workspace_index[target.name] = record
+            for record in self.workspace_index.values():
+                if isinstance(record, dict) and isinstance(record.get("links"), list):
+                    record["links"] = [target.name if name == path.name else name for name in record["links"]]
+
+            for window in matching_windows:
+                if isinstance(window, NotebookWindow):
+                    window.document_path = target
+                    window.document_title = target.stem
+                    window.setWindowTitle(f"{target.stem} — RobustNotes Studio")
+                    window._saved_page_image_keys.clear()
+                    window._saved_canvas_image_keys.clear()
+                else:
+                    window.path = target
+                    window.setWindowTitle(f"{target.name} — RobustNotes")
+                    title_labels = window.findChildren(QLabel, "Brand")
+                    if title_labels:
+                        title_labels[0].setText(target.name)
+            self.save_workspace_index()
+            self.refresh_documents()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            for source, destination in reversed(moved):
+                try:
+                    if source.exists() and not destination.exists():
+                        source.rename(destination)
+                except OSError:
+                    pass
+            QMessageBox.critical(self, "Rename failed", f"Could not rename the document.\n\n{error}")
 
     def open_selected_document_for_path(self, path: Path) -> None:
         if path.suffix.lower() in {".rnote", ".rboard"}:
