@@ -16,6 +16,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import wave
@@ -29,7 +30,7 @@ from typing import Any, Optional, Sequence, TypedDict, cast
 from urllib.parse import urlencode, urlparse
 
 
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 UPDATE_REPOSITORY = "specrthyahskod/RobustNotes-"
 
 
@@ -295,49 +296,80 @@ class UpdateDownloadWorker(QThread):
         self.expected_digest = expected_digest
 
     def run(self) -> None:
-        temporary_path = ""
-        try:
-            safe_version = re.sub(r"[^0-9A-Za-z.-]", "", self.version)
-            request = urllib.request.Request(
-                self.url,
-                headers={"Accept": "application/octet-stream", "User-Agent": "RobustNotes-Updater"},
-            )
-            digest = hashlib.sha256()
-            with urllib.request.urlopen(request, timeout=60) as response:
-                final_host = urlparse(response.geturl()).hostname or ""
-                if not (final_host == "github.com" or final_host.endswith(".githubusercontent.com")):
-                    raise RuntimeError("The installer download redirected to an untrusted host.")
-                content_length = int(response.headers.get("Content-Length", "0") or 0)
-                if content_length > 1024**3:
-                    raise RuntimeError("The installer file exceeds the 1 GB safety limit.")
-                with tempfile.NamedTemporaryFile(
-                    prefix=f"RobustNotes-Setup-{safe_version}-", suffix=".exe", delete=False
-                ) as output:
-                    temporary_path = output.name
-                    first_bytes = b""
-                    total = 0
-                    while chunk := response.read(1024 * 1024):
-                        total += len(chunk)
-                        if total > 1024**3:
-                            raise RuntimeError("The installer file exceeds the 1 GB safety limit.")
-                        if not first_bytes:
-                            first_bytes = chunk[:2]
-                        digest.update(chunk)
-                        output.write(chunk)
-            if first_bytes != b"MZ":
-                raise RuntimeError("The downloaded file is not a Windows installer.")
-            if self.expected_digest:
-                algorithm, separator, expected = self.expected_digest.partition(":")
-                if separator and algorithm.casefold() == "sha256" and digest.hexdigest().casefold() != expected.casefold():
-                    raise RuntimeError("The installer checksum does not match the GitHub release metadata.")
-            self.installer_ready.emit(temporary_path)
-        except Exception as error:
-            if temporary_path:
-                try:
-                    os.remove(temporary_path)
-                except OSError:
-                    pass
-            self.request_failed.emit(f"Could not download the update: {error}")
+        safe_version = re.sub(r"[^0-9A-Za-z.-]", "", self.version)
+        request = urllib.request.Request(
+            self.url,
+            headers={"Accept": "application/octet-stream", "User-Agent": "RobustNotes-Updater"},
+        )
+        retryable_http_statuses = {408, 425, 429, 500, 502, 503, 504}
+        last_error: Exception = RuntimeError("The installer download did not complete.")
+
+        for attempt in range(4):
+            temporary_path = ""
+            retry_delay = min(2 ** attempt, 8)
+            try:
+                digest = hashlib.sha256()
+                with urllib.request.urlopen(request, timeout=180) as response:
+                    final_host = urlparse(response.geturl()).hostname or ""
+                    if not (final_host == "github.com" or final_host.endswith(".githubusercontent.com")):
+                        raise RuntimeError("The installer download redirected to an untrusted host.")
+                    content_length = int(response.headers.get("Content-Length", "0") or 0)
+                    if content_length > 1024**3:
+                        raise RuntimeError("The installer file exceeds the 1 GB safety limit.")
+                    with tempfile.NamedTemporaryFile(
+                        prefix=f"RobustNotes-Setup-{safe_version}-", suffix=".exe", delete=False
+                    ) as output:
+                        temporary_path = output.name
+                        first_bytes = b""
+                        total = 0
+                        while chunk := response.read(1024 * 1024):
+                            total += len(chunk)
+                            if total > 1024**3:
+                                raise RuntimeError("The installer file exceeds the 1 GB safety limit.")
+                            if not first_bytes:
+                                first_bytes = chunk[:2]
+                            digest.update(chunk)
+                            output.write(chunk)
+                if content_length and total != content_length:
+                    raise ConnectionError(
+                        f"The installer download was incomplete ({total} of {content_length} bytes)."
+                    )
+                if first_bytes != b"MZ":
+                    raise RuntimeError("The downloaded file is not a Windows installer.")
+                if self.expected_digest:
+                    algorithm, separator, expected = self.expected_digest.partition(":")
+                    if separator and algorithm.casefold() == "sha256" and digest.hexdigest().casefold() != expected.casefold():
+                        raise RuntimeError("The installer checksum does not match the GitHub release metadata.")
+                ready_path = temporary_path
+                temporary_path = ""
+                self.installer_ready.emit(ready_path)
+                return
+            except urllib.error.HTTPError as error:
+                last_error = error
+                if error.code not in retryable_http_statuses or attempt == 3:
+                    break
+                retry_after = error.headers.get("Retry-After") if error.headers else None
+                if retry_after:
+                    try:
+                        retry_delay = min(max(float(retry_after), 1.0), 30.0)
+                    except ValueError:
+                        pass
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as error:
+                last_error = error
+                if attempt == 3:
+                    break
+            except Exception as error:
+                last_error = error
+                break
+            finally:
+                if temporary_path:
+                    try:
+                        os.remove(temporary_path)
+                    except OSError:
+                        pass
+            time.sleep(retry_delay)
+
+        self.request_failed.emit(f"Could not download the update after several attempts: {last_error}")
 
 
 class LocalAIChatWorker(QThread):
