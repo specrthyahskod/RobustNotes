@@ -510,7 +510,7 @@ def extract_handwriting_line_crops(image_png: bytes):
         and int(component_stats[component_id, cv2.CC_STAT_WIDTH]) >= 2
         and int(component_stats[component_id, cv2.CC_STAT_HEIGHT]) >= 2
     ]
-    binary = (np.isin(component_labels, valid_components).astype(np.uint8) * 255)
+    binary = np.where(np.isin(component_labels, valid_components), 255, 0).astype(np.uint8)
     ink_rows = np.count_nonzero(binary, axis=1)
     active_rows = np.flatnonzero(ink_rows >= max(1, raw_image.shape[1] // 2500))
     if active_rows.size == 0:
@@ -1027,6 +1027,20 @@ class CanvasTextItem(QGraphicsTextItem):
         self.setDefaultTextColor(color)
         self.content_changed.emit()
 
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        scene = self.scene()
+        before_text = self.toPlainText()
+        before_cursor = self.textCursor()
+        super().keyPressEvent(event)
+        if not isinstance(scene, PageScene) or self.toPlainText() == before_text:
+            return
+        if self.sceneBoundingRect().bottom() > scene.page_rect.bottom() - 14:
+            self.document().undo()
+            self.setTextCursor(before_cursor)
+            owner = scene.parent()
+            if isinstance(owner, NotebookWindow):
+                owner.statusBar().showMessage("Text must stay within the page. Move the box up or make the text shorter.", 3500)
+
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
         self.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -1097,6 +1111,15 @@ class ResizablePixmapItem(QGraphicsPixmapItem):
                 height = max(1, self.pixmap().height())
                 min_scale = 40.0 / max(width, height)
                 max_scale = 10000.0 / max(width, height)
+                page_scene = self.scene()
+                if isinstance(page_scene, PageScene):
+                    page = page_scene.page_rect
+                    max_scale = min(
+                        max_scale,
+                        max(1.0, page.right() - self.pos().x()) / width,
+                        max(1.0, page.bottom() - self.pos().y()) / height,
+                    )
+                min_scale = min(min_scale, max_scale)
                 self.setScale(max(min_scale, min(max_scale, self._resize_start_scale * projection)))
             event.accept()
             return
@@ -1267,6 +1290,7 @@ class SmoothCanvasView(QGraphicsView):
         self._tablet_segment_item: Optional[QGraphicsPathItem] = None
         self.highlighter_width = 24.0
         self.current_zoom = 1.0
+        self.fit_mode = "width"
         self.navigation_locked = False
 
         self.is_drawing = False
@@ -1288,17 +1312,44 @@ class SmoothCanvasView(QGraphicsView):
 
     def set_page_scene(self, page_scene: PageScene) -> None:
         self.setScene(page_scene)
-        self.fit_page()
+        self.fit_page_width()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        if getattr(self, "fit_mode", "width") == "width":
+            QTimer.singleShot(0, self.fit_page_width)
 
     def fit_page(self) -> None:
         scene = self.current_page_scene()
         if not scene or self.viewport().width() <= 0 or self.viewport().height() <= 0:
             return
         self.resetTransform()
-        margin = 42
+        margin = 28
         self.fitInView(scene.page_rect.adjusted(-margin, -margin, margin, margin), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fit_mode = "page"
         self.current_zoom = self.transform().m11()
         self.zoom_changed.emit(self.current_zoom)
+
+    def fit_page_width(self) -> None:
+        scene = self.current_page_scene()
+        available_width = self.viewport().width() - 28
+        if scene is None or available_width <= 0 or scene.page_rect.width() <= 0:
+            return
+        self.resetTransform()
+        # Width-fit is a layout operation, so allow a smaller scale than the
+        # manual zoom slider's minimum on narrow windows. This guarantees that
+        # the whole sheet remains visible horizontally.
+        target_zoom = max(0.05, min(self.MAX_ZOOM, available_width / scene.page_rect.width()))
+        self.scale(target_zoom, target_zoom)
+        self.centerOn(scene.page_rect.center())
+        self.fit_mode = "width"
+        self.current_zoom = self.transform().m11()
+        self.zoom_changed.emit(self.current_zoom)
+
+    def center_page(self) -> None:
+        scene = self.current_page_scene()
+        if scene is not None:
+            self.centerOn(scene.page_rect.center())
 
     def set_zoom(self, target_zoom: float) -> None:
         if self.navigation_locked:
@@ -1307,8 +1358,38 @@ class SmoothCanvasView(QGraphicsView):
         current = max(self.transform().m11(), 0.001)
         factor = target_zoom / current
         self.scale(factor, factor)
+        self.fit_mode = "manual"
         self.current_zoom = self.transform().m11()
         self.zoom_changed.emit(self.current_zoom)
+
+    def _page_point(self, point: QPointF, inset: float = 0.0) -> QPointF:
+        """Keep drawing coordinates inside the printable page rectangle."""
+        scene = self.current_page_scene()
+        if scene is None:
+            return point
+        bounds = scene.page_rect.adjusted(inset, inset, -inset, -inset)
+        if bounds.width() <= 0 or bounds.height() <= 0:
+            bounds = scene.page_rect
+        return QPointF(
+            min(max(point.x(), bounds.left()), bounds.right()),
+            min(max(point.y(), bounds.top()), bounds.bottom()),
+        )
+
+    def _keep_item_on_page(self, item: QGraphicsItem, scene: PageScene) -> None:
+        """Clamp a moved item to the current page, keeping its full bounds visible."""
+        page = scene.page_rect
+        bounds = item.sceneBoundingRect()
+        dx = 0.0
+        dy = 0.0
+        if bounds.left() < page.left():
+            dx = page.left() - bounds.left()
+        elif bounds.right() > page.right():
+            dx = page.right() - bounds.right()
+        if bounds.top() < page.top():
+            dy = page.top() - bounds.top()
+        elif bounds.bottom() > page.bottom():
+            dy = page.bottom() - bounds.bottom()
+        item.moveBy(dx, dy)
 
     def zoom_by(self, factor: float) -> None:
         self.set_zoom(self.transform().m11() * factor)
@@ -1393,6 +1474,12 @@ class SmoothCanvasView(QGraphicsView):
 
         scene_pos = self.mapToScene(event.position().toPoint())
 
+        # A tap on the pasteboard must not create ink, erase content, or start
+        # a selection. Space/middle-button panning remains available there.
+        if not scene.page_rect.contains(scene_pos):
+            event.accept()
+            return
+
         if self.current_mode == "TEXT":
             hit_item = scene.itemAt(scene_pos, self.transform())
             if isinstance(hit_item, CanvasTextItem):
@@ -1452,6 +1539,9 @@ class SmoothCanvasView(QGraphicsView):
 
         self.is_drawing = True
         self.shape_has_snapped = False
+        if self.current_mode != "LASSO":
+            inset = self.make_pen().widthF() / 2.0 + 1.0
+            scene_pos = self._page_point(scene_pos, inset)
         self.points = [scene_pos]
         self._start_path_item(scene_pos)
         event.accept()
@@ -1469,7 +1559,9 @@ class SmoothCanvasView(QGraphicsView):
             super().mouseMoveEvent(event)
             return
 
-        scene_pos = self.mapToScene(event.position().toPoint())
+        raw_scene_pos = self.mapToScene(event.position().toPoint())
+        inset = self.make_pen().widthF() / 2.0 + 1.0
+        scene_pos = self._page_point(raw_scene_pos, inset)
 
         if self.current_mode == "ERASER":
             self.erase_items_at(scene_pos)
@@ -1526,6 +1618,7 @@ class SmoothCanvasView(QGraphicsView):
                 before_scales: list[float] = []
                 after_scales: list[float] = []
                 for item, old_pos, old_scale in self.moving_items_before:
+                    self._keep_item_on_page(item, scene)
                     new_pos = QPointF(item.pos())
                     new_scale = item.scale()
                     if (new_pos - old_pos).manhattanLength() > 0.01 or abs(new_scale - old_scale) > 0.0001:
@@ -1549,7 +1642,10 @@ class SmoothCanvasView(QGraphicsView):
             return
 
         self.is_drawing = False
-        release_pos = self.mapToScene(event.position().toPoint())
+        release_pos = self._page_point(
+            self.mapToScene(event.position().toPoint()),
+            self.make_pen().widthF() / 2.0 + 1.0,
+        )
 
         if self.current_mode == "ERASER":
             if self.erased_in_drag:
@@ -1649,14 +1745,18 @@ class SmoothCanvasView(QGraphicsView):
                     self.current_path = None
                     self._tablet_items = []
                     self._tablet_segment_item = None
-                    self._tablet_last_point = self.mapToScene(event.position().toPoint())
+                    self._tablet_last_point = self._page_point(
+                        self.mapToScene(event.position().toPoint()), self.make_pen().widthF() / 2.0 + 1.0
+                    )
                     self._tablet_last_width = 0.0
                     self._tablet_active = True
             event.accept()
             return
         if event_type == QEvent.Type.TabletMove and self._tablet_active:
             scene = self.current_page_scene()
-            point = self.mapToScene(event.position().toPoint())
+            point = self._page_point(
+                self.mapToScene(event.position().toPoint()), self.make_pen().widthF() / 2.0 + 1.0
+            )
             pressure = max(0.08, min(1.0, float(event.pressure())))
             base_width = self.highlighter_width if self.current_mode == "HIGHLIGHTER" else max(2.5, self.pen_width) if self.current_mode == "LASER" else self.pen_width
             width = round(max(0.6, base_width * (0.22 + pressure * 0.78)) * 2.0) / 2.0
@@ -1813,10 +1913,28 @@ class SmoothCanvasView(QGraphicsView):
                         fraction = mark / length
                         center = QPointF(start.x() + delta_x * fraction, start.y() + delta_y * fraction)
                         half_tick = 14 if mark % 200 == 0 else 7
-                        path.moveTo(center.x() - normal_x * half_tick, center.y() - normal_y * half_tick)
-                        path.lineTo(center.x() + normal_x * half_tick, center.y() + normal_y * half_tick)
+                        inset = self.current_item.pen().widthF() / 2.0 + 1.0
+                        tick_start = self._page_point(
+                            QPointF(center.x() - normal_x * half_tick, center.y() - normal_y * half_tick), inset
+                        )
+                        tick_end = self._page_point(
+                            QPointF(center.x() + normal_x * half_tick, center.y() + normal_y * half_tick), inset
+                        )
+                        path.moveTo(tick_start)
+                        path.lineTo(tick_end)
         elif self.current_mode == "COMPASS":
             radius = math.hypot(end.x() - start.x(), end.y() - start.y())
+            scene = self.current_page_scene()
+            if scene is not None:
+                page = scene.page_rect
+                inset = self.current_item.pen().widthF() / 2.0 + 1.0
+                radius = min(
+                    radius,
+                    max(0.0, start.x() - page.left() - inset),
+                    max(0.0, page.right() - start.x() - inset),
+                    max(0.0, start.y() - page.top() - inset),
+                    max(0.0, page.bottom() - start.y() - inset),
+                )
             path.addEllipse(QRectF(start.x() - radius, start.y() - radius, radius * 2, radius * 2))
         elif self.shape_submode == "RECT":
             path.addRect(rect)
@@ -2124,6 +2242,7 @@ class NotebookWindow(QMainWindow):
 
         self.canvas = SmoothCanvasView()
         self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+        self.canvas.setToolTip("Write, draw, and place content inside the page. Use Space + drag to pan the canvas.")
         self.thumbnail_timer = QTimer(self)
         self.thumbnail_timer.setSingleShot(True)
         self.thumbnail_timer.setInterval(600)
@@ -2155,7 +2274,7 @@ class NotebookWindow(QMainWindow):
         self.select_tool("PEN")
         self.apply_theme(self.current_theme_name)
         self.save_document()
-        QTimer.singleShot(0, lambda: self.canvas.set_zoom(0.84))
+        QTimer.singleShot(0, self.canvas.fit_page_width)
         self.statusBar().showMessage("Ready  ·  P to draw  ·  Space + drag to pan  ·  Ctrl+Z to undo")
 
     # ----- Layout construction ------------------------------------------------
@@ -2581,9 +2700,21 @@ class NotebookWindow(QMainWindow):
         self.zoom_hud_slider.valueChanged.connect(self.set_scale_from_hud)
         layout.addWidget(self.zoom_hud_slider)
 
-        fit_button = QPushButton("Fit")
+        center_button = QPushButton("Center")
+        center_button.setObjectName("ZoomFitButton")
+        center_button.setToolTip("Recenter the page without changing zoom")
+        center_button.clicked.connect(self.canvas.center_page)
+        layout.addWidget(center_button)
+
+        width_button = QPushButton("Width")
+        width_button.setObjectName("ZoomFitButton")
+        width_button.setToolTip("Fit the page width to the canvas")
+        width_button.clicked.connect(self.canvas.fit_page_width)
+        layout.addWidget(width_button)
+
+        fit_button = QPushButton("Page")
         fit_button.setObjectName("ZoomFitButton")
-        fit_button.setToolTip("Fit page to canvas")
+        fit_button.setToolTip("Fit the entire page to the canvas")
         fit_button.clicked.connect(self.canvas.fit_page)
         layout.addWidget(fit_button)
         hud.setFixedHeight(44)
@@ -3152,7 +3283,9 @@ class NotebookWindow(QMainWindow):
     def update_status(self) -> None:
         mode = self.current_mode_label()
         color = self.canvas.pen_color.name().upper()
-        self.statusBar().showMessage(f"{mode}  ·  Ink {color}  ·  Ctrl+Z undo  ·  Space + drag to pan")
+        self.statusBar().showMessage(
+            f"{mode}  ·  Ink {color}  ·  Page edges locked  ·  Ctrl+Z undo  ·  Space + drag to pan"
+        )
 
     def current_mode_label(self) -> str:
         labels = {
@@ -3375,8 +3508,13 @@ class NotebookWindow(QMainWindow):
         item = CanvasTextItem(text)
         item.setFont(QFont("Segoe UI", 20))
         item.setDefaultTextColor(QColor("#172334"))
-        item.setTextWidth(480)
-        item.setPos(scene_pos)
+        page = scene.page_rect.adjusted(14, 14, -14, -14)
+        x = min(max(scene_pos.x(), page.left()), page.right())
+        item.setTextWidth(min(480.0, max(40.0, page.right() - x)))
+        item_bounds = item.boundingRect()
+        x = min(x, max(page.left(), page.right() - item_bounds.width()))
+        y = min(max(scene_pos.y(), page.top()), max(page.top(), page.bottom() - item_bounds.height()))
+        item.setPos(x, y)
         item.setZValue(3)
         item.setData(0, "CANVAS_TEXT")
         item.setFlags(
@@ -3405,8 +3543,15 @@ class NotebookWindow(QMainWindow):
         image = ResizablePixmapItem(pixmap)
         image_width = max(1, pixmap.width())
         image_height = max(1, pixmap.height())
-        image.setScale(min(1.0, 720.0 / image_width, 560.0 / image_height))
-        center = self.canvas.mapToScene(self.canvas.viewport().rect().center())
+        page = scene.page_rect.adjusted(24, 24, -24, -24)
+        image.setScale(min(
+            1.0,
+            720.0 / image_width,
+            560.0 / image_height,
+            page.width() / image_width,
+            page.height() / image_height,
+        ))
+        center = scene.page_rect.center()
         image.setPos(
             center.x() - image_width * image.scale() / 2.0,
             center.y() - image_height * image.scale() / 2.0,
@@ -5063,8 +5208,15 @@ class WorkspaceWindow(QMainWindow):
         lock_action = self.profile_menu.addAction("Lock workspace")
         lock_action.triggered.connect(self.show_auth)
         self.profile_button.setMenu(self.profile_menu)
+        command_button = QPushButton("⌘  Ctrl+K")
+        command_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        command_button.setToolTip("Open the workspace command palette")
+        command_button.clicked.connect(self.open_command_palette)
+        header.addWidget(command_button)
         header.addWidget(self.profile_button)
         root.addLayout(header)
+        self.command_palette_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
+        self.command_palette_shortcut.activated.connect(self.open_command_palette)
 
         welcome_row = QHBoxLayout()
         welcome_text = QVBoxLayout()
@@ -5089,6 +5241,15 @@ class WorkspaceWindow(QMainWindow):
         self.search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         self.search_shortcut.activated.connect(self.search_input.setFocus)
         search_row.addWidget(self.search_input, 1)
+        daily_button = QPushButton("Daily note")
+        daily_button.setToolTip("Open or create today's private daily note")
+        daily_button.clicked.connect(self.open_daily_note)
+        search_row.addWidget(daily_button)
+        capture_button = QPushButton("Quick capture")
+        capture_button.setObjectName("PrimaryButton")
+        capture_button.setToolTip("Save a thought to your local workspace inbox")
+        capture_button.clicked.connect(self.quick_capture)
+        search_row.addWidget(capture_button)
         backup_button = QPushButton("Encrypted backup…")
         backup_button.setToolTip("Create a password-protected copy of this local workspace")
         backup_button.clicked.connect(self.show_backup_menu)
@@ -5165,6 +5326,124 @@ class WorkspaceWindow(QMainWindow):
         self.profile_name_action.setText(name)
         self.stack.setCurrentWidget(self.dashboard_page)
         self.refresh_documents()
+
+    def open_daily_note(self) -> None:
+        """Open or create one dated Markdown note in this profile's workspace."""
+        today = datetime.now().astimezone().date()
+        path = self.workspace_dir / f"Daily note {today.isoformat()}.md"
+        if not path.exists():
+            body = (
+                f"# {today.strftime('%A, %B')} {today.day}, {today.year}\n\n"
+                "## Priorities\n\n- \n\n"
+                "## Notes\n\n\n"
+                "## Reflection\n\n"
+            )
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+            except OSError as error:
+                QMessageBox.warning(self, "Could not create daily note", f"The note could not be saved.\n\n{error}")
+                return
+        self.open_text_file(path)
+
+    def quick_capture(self) -> None:
+        """Capture a short thought into a timestamped local Markdown inbox file."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Quick capture")
+        dialog.setMinimumSize(460, 360)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 22, 24, 20)
+        heading = QLabel("Save a thought for later")
+        heading.setObjectName("Brand")
+        layout.addWidget(heading)
+        title_input = QLineEdit()
+        title_input.setPlaceholderText("A short title (optional)")
+        layout.addWidget(title_input)
+        body_input = QTextEdit()
+        body_input.setPlaceholderText("Type a thought, reminder, or idea…")
+        layout.addWidget(body_input, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        save_button = buttons.addButton("Save capture", QDialogButtonBox.ButtonRole.AcceptRole)
+        save_button.setObjectName("PrimaryButton")
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.setStyleSheet(WORKSPACE_STYLE)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        body = body_input.toPlainText().strip()
+        if not body:
+            QMessageBox.information(self, "Nothing to capture", "Write a thought before saving it.")
+            return
+        title = " ".join(title_input.text().split()) or "Untitled capture"
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H-%M-%S")
+        path = self.unique_path(f"Capture {timestamp} - {title}", ".md")
+        try:
+            path.write_text(f"# {title}\n\n{body}\n", encoding="utf-8")
+        except OSError as error:
+            QMessageBox.warning(self, "Could not save capture", f"The capture could not be saved.\n\n{error}")
+            return
+        self.open_text_file(path)
+
+    def open_command_palette(self) -> None:
+        """Search workspace actions and recent files from one keyboard-first dialog."""
+        if self.stack.currentWidget() != self.dashboard_page:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Workspace commands")
+        dialog.setMinimumSize(560, 480)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        search = QLineEdit()
+        search.setPlaceholderText("Search actions or recent files…")
+        search.setClearButtonEnabled(True)
+        layout.addWidget(search)
+        results = QListWidget()
+        results.setObjectName("CommandResults")
+        layout.addWidget(results, 1)
+        actions = [
+            ("Quick capture", "Save a thought to your local inbox", self.quick_capture),
+            ("Today's daily note", "Open or create today's Markdown note", self.open_daily_note),
+            ("New notebook", "Create handwritten pages and annotate PDFs", self.create_notebook),
+            ("New text file", "Create notes, Markdown, or code", self.create_text_file),
+            ("New whiteboard", "Open a freeform visual canvas", self.create_whiteboard),
+        ]
+        entries: list[tuple[str, str, object]] = []
+        for title, detail, callback in actions:
+            entries.append((title, detail, callback))
+        for path in self.document_files()[:100]:
+            entries.append((path.stem, f"Open recent · {path.suffix[1:].upper()}", path))
+
+        def populate(query: str = "") -> None:
+            results.clear()
+            terms = query.casefold().split()
+            for title, detail, target in entries:
+                searchable = f"{title} {detail}".casefold()
+                if terms and not all(term in searchable for term in terms):
+                    continue
+                item = QListWidgetItem(f"{title}\n{detail}")
+                item.setData(Qt.ItemDataRole.UserRole, target)
+                results.addItem(item)
+            if results.count():
+                results.setCurrentRow(0)
+
+        def run_selected() -> None:
+            item = results.currentItem()
+            target = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if callable(target):
+                dialog.accept()
+                target()
+            elif isinstance(target, Path):
+                dialog.accept()
+                self.open_selected_document_for_path(target)
+
+        search.textChanged.connect(populate)
+        results.itemActivated.connect(lambda _item: run_selected())
+        search.returnPressed.connect(run_selected)
+        dialog.setStyleSheet(WORKSPACE_STYLE)
+        populate()
+        search.setFocus()
+        dialog.exec()
 
     def change_password(self):
         profile = self.profile
