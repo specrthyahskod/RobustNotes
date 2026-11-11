@@ -9,6 +9,7 @@ import html
 import io
 import json
 import re
+import random
 import sys
 import secrets
 import shutil
@@ -692,38 +693,49 @@ class FunkwhaleMusicRequestWorker(QThread):
 
 
 class FunkwhaleMusicPlayerDialog(QDialog):
-    """Embedded player for a user-owned or community Funkwhale pod."""
+    """Study player for local audio and a user-owned or community Funkwhale pod."""
 
     def __init__(self, parent, settings: QSettings):
         super().__init__(parent)
         self.settings = settings
         self.worker: Optional[FunkwhaleMusicRequestWorker] = None
         self.pending_track: Optional[dict[str, Any]] = None
+        self.queue: list[dict[str, Any]] = []
+        self.current_index = -1
+        self._seeking = False
+        self._shuffle = False
+        self._repeat = False
+        self.focus_remaining_seconds = 0
         self.server_url = str(settings.value("funkwhaleServer", "https://demo.funkwhale.audio"))
         self.username = str(settings.value("funkwhaleUsername", ""))
         # Keep the Subsonic API password in memory only; it is not written to QSettings.
         self.password = ""
-        self.setWindowTitle("RobustNotes · Music")
-        self.setMinimumSize(650, 540)
-        self.resize(740, 630)
+        self.setWindowTitle("RobustNotes · Study Music")
+        self.setMinimumSize(640, 620)
+        self.resize(760, 760)
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 22, 24, 20)
-        root.setSpacing(12)
+        root.setContentsMargins(22, 20, 22, 18)
+        root.setSpacing(10)
 
         header = QHBoxLayout()
-        title = QLabel("Music")
+        title = QLabel("Study Music")
         title.setObjectName("Brand")
         header.addWidget(title)
         header.addStretch(1)
         self.connection_status = QLabel("Ready to search")
         self.connection_status.setObjectName("Muted")
         header.addWidget(self.connection_status)
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("My music files", "local")
+        self.source_combo.addItem("Funkwhale library", "funkwhale")
+        self.source_combo.currentIndexChanged.connect(self.change_source)
+        header.addWidget(self.source_combo)
         self.configure_button = QPushButton("Connect…")
         self.configure_button.clicked.connect(self.configure_connection)
         header.addWidget(self.configure_button)
         root.addLayout(header)
 
-        intro = QLabel("Funkwhale is open-source and self-hostable. Connect to a pod to search and stream its library.")
+        intro = QLabel("A quiet soundtrack for focused work. Close this window to get your page back—music keeps playing in the background.")
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         root.addWidget(intro)
@@ -735,37 +747,143 @@ class FunkwhaleMusicPlayerDialog(QDialog):
 
         search_row = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search songs, artists, or albums")
+        self.search_input.setPlaceholderText("Search your connected library…")
         self.search_input.returnPressed.connect(self.search_library)
         self.search_button = QPushButton("Search")
         self.search_button.setObjectName("PrimaryButton")
         self.search_button.clicked.connect(self.search_library)
+        self.add_local_button = QPushButton("Add files…")
+        self.add_local_button.setToolTip("Add audio files from this device to the queue")
+        self.add_local_button.clicked.connect(self.add_local_files)
         search_row.addWidget(self.search_input, 1)
         search_row.addWidget(self.search_button)
+        search_row.addWidget(self.add_local_button)
         root.addLayout(search_row)
 
+        playlist_row = QHBoxLayout()
+        playlist_label = QLabel("QUEUE")
+        playlist_label.setObjectName("SmallSectionLabel")
+        playlist_row.addWidget(playlist_label)
+        playlist_row.addStretch(1)
+        self.save_playlist_button = QPushButton("Save playlist")
+        self.save_playlist_button.clicked.connect(self.save_playlist)
+        playlist_row.addWidget(self.save_playlist_button)
+        self.load_playlist_button = QPushButton("My playlists")
+        self.load_playlist_button.clicked.connect(self.load_playlist)
+        playlist_row.addWidget(self.load_playlist_button)
+        root.addLayout(playlist_row)
+
         self.song_list = QListWidget()
-        self.song_list.itemDoubleClicked.connect(self.play_selected)
+        self.song_list.setObjectName("MusicQueue")
+        self.song_list.itemActivated.connect(self.play_selected)
+        self.song_list.setToolTip("Double-click or press Enter to play a track")
         root.addWidget(self.song_list, 1)
 
         player_card = QFrame()
         player_card.setObjectName("Card")
-        player_layout = QHBoxLayout(player_card)
-        player_layout.setContentsMargins(14, 10, 14, 10)
-        self.now_playing = QLabel("Nothing playing")
-        self.now_playing.setObjectName("Muted")
+        player_layout = QVBoxLayout(player_card)
+        player_layout.setContentsMargins(16, 14, 16, 12)
+        player_layout.setSpacing(9)
+        current_row = QHBoxLayout()
+        self.cover_art = QLabel("♪")
+        self.cover_art.setFixedSize(54, 54)
+        self.cover_art.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cover_art.setStyleSheet("background:#203b45; color:#5fe0eb; border-radius:12px; font-size:25px; font-weight:700;")
+        current_row.addWidget(self.cover_art)
+        current_labels = QVBoxLayout()
+        self.now_playing = QLabel("Choose something to listen to")
+        self.now_playing.setStyleSheet("font-size:15px; font-weight:700;")
         self.now_playing.setWordWrap(True)
-        player_layout.addWidget(self.now_playing, 1)
+        self.now_artist = QLabel("Your music stays yours")
+        self.now_artist.setObjectName("Muted")
+        current_labels.addWidget(self.now_playing)
+        current_labels.addWidget(self.now_artist)
+        current_row.addLayout(current_labels, 1)
+        player_layout.addLayout(current_row)
+
+        seek_row = QHBoxLayout()
+        self.elapsed_label = QLabel("0:00")
+        self.elapsed_label.setObjectName("Muted")
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 0)
+        self.position_slider.sliderPressed.connect(lambda: setattr(self, "_seeking", True))
+        self.position_slider.sliderReleased.connect(self.seek_to_position)
+        self.duration_label = QLabel("0:00")
+        self.duration_label.setObjectName("Muted")
+        seek_row.addWidget(self.elapsed_label)
+        seek_row.addWidget(self.position_slider, 1)
+        seek_row.addWidget(self.duration_label)
+        player_layout.addLayout(seek_row)
+
+        transport = QHBoxLayout()
+        self.shuffle_button = QPushButton("⤨")
+        self.shuffle_button.setCheckable(True)
+        self.shuffle_button.setToolTip("Shuffle the queue")
+        self.shuffle_button.setStyleSheet("QPushButton:checked { background:#203d49; border-color:#48DDF0; color:#5fe0eb; }")
+        self.shuffle_button.toggled.connect(lambda checked: setattr(self, "_shuffle", checked))
+        transport.addWidget(self.shuffle_button)
+        self.previous_button = QPushButton("|◀")
+        self.previous_button.setToolTip("Previous track")
+        self.previous_button.clicked.connect(self.play_previous)
+        transport.addWidget(self.previous_button)
         self.play_pause_button = QPushButton("▶")
-        self.play_pause_button.setFixedSize(42, 38)
+        self.play_pause_button.setObjectName("PrimaryButton")
+        self.play_pause_button.setFixedSize(48, 42)
         self.play_pause_button.setToolTip("Play or pause")
         self.play_pause_button.clicked.connect(self.toggle_playback)
-        player_layout.addWidget(self.play_pause_button)
-        self.stop_button = QPushButton("■")
-        self.stop_button.setFixedSize(42, 38)
+        transport.addWidget(self.play_pause_button)
+        self.next_button = QPushButton("▶|")
+        self.next_button.setToolTip("Next track")
+        self.next_button.clicked.connect(self.play_next)
+        transport.addWidget(self.next_button)
+        self.repeat_button = QPushButton("↻")
+        self.repeat_button.setCheckable(True)
+        self.repeat_button.setToolTip("Repeat the current track")
+        self.repeat_button.setStyleSheet("QPushButton:checked { background:#203d49; border-color:#48DDF0; color:#5fe0eb; }")
+        self.repeat_button.toggled.connect(lambda checked: setattr(self, "_repeat", checked))
+        transport.addWidget(self.repeat_button)
+        transport.addStretch(1)
+        volume_label = QLabel("Volume")
+        volume_label.setObjectName("Muted")
+        transport.addWidget(volume_label)
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setFixedWidth(105)
+        raw_saved_volume = settings.value("musicVolume", 0.45)
+        try:
+            if isinstance(raw_saved_volume, bool) or not isinstance(raw_saved_volume, (int, float, str)):
+                raise TypeError("Saved volume is not numeric")
+            saved_volume = float(raw_saved_volume)
+            if not math.isfinite(saved_volume):
+                raise ValueError("Saved volume is not finite")
+        except (TypeError, ValueError, OverflowError):
+            saved_volume = 0.45
+        self.volume_slider.setValue(round(max(0.0, min(1.0, saved_volume)) * 100))
+        transport.addWidget(self.volume_slider)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setToolTip("Stop playback")
         self.stop_button.clicked.connect(self.stop_playback)
-        player_layout.addWidget(self.stop_button)
+        transport.addWidget(self.stop_button)
+        player_layout.addLayout(transport)
         root.addWidget(player_card)
+
+        focus_row = QHBoxLayout()
+        focus_label = QLabel("Focus session")
+        focus_label.setObjectName("Muted")
+        focus_row.addWidget(focus_label)
+        self.focus_duration = QComboBox()
+        self.focus_duration.addItem("25 minutes", 25)
+        self.focus_duration.addItem("50 minutes", 50)
+        self.focus_duration.addItem("90 minutes", 90)
+        focus_row.addWidget(self.focus_duration)
+        self.focus_button = QPushButton("Start focus")
+        self.focus_button.setToolTip("Start a study timer; playback pauses when it ends")
+        self.focus_button.clicked.connect(self.toggle_focus_session)
+        focus_row.addWidget(self.focus_button)
+        self.focus_status = QLabel("Music and timer are optional")
+        self.focus_status.setObjectName("Muted")
+        focus_row.addWidget(self.focus_status, 1)
+        root.addLayout(focus_row)
 
         self.player: Any = None
         self.audio_output: Any = None
@@ -775,12 +893,266 @@ class FunkwhaleMusicPlayerDialog(QDialog):
             player.setAudioOutput(audio_output)
             player.errorOccurred.connect(self.on_player_error)
             player.playbackStateChanged.connect(self.update_play_button)
+            player.positionChanged.connect(self.update_position)
+            player.durationChanged.connect(self.update_duration)
+            player.mediaStatusChanged.connect(self.on_media_status)
             self.audio_output = audio_output
             self.player = player
+            self.volume_slider.valueChanged.connect(self.set_volume)
+            self.set_volume(self.volume_slider.value())
         else:
             self.connection_status.setText("QtMultimedia playback is unavailable")
             self.play_pause_button.setEnabled(False)
+            self.add_local_button.setEnabled(False)
+        self.focus_timer = QTimer(self)
+        self.focus_timer.setInterval(1000)
+        self.focus_timer.timeout.connect(self.tick_focus_session)
         self.setStyleSheet(WORKSPACE_STYLE)
+        self.change_source()
+
+    def change_source(self, *_args):
+        is_local = self.source_combo.currentData() == "local"
+        self.search_input.setEnabled(not is_local)
+        self.search_button.setVisible(not is_local)
+        self.add_local_button.setVisible(is_local)
+        self.configure_button.setVisible(not is_local)
+        self.server_label.setVisible(not is_local)
+        self.search_input.setPlaceholderText(
+            "Add audio files from your device to build a queue…"
+            if is_local else "Search songs, artists, or albums on your pod…"
+        )
+        if is_local:
+            self.connection_status.setText("Local library · files stay on this device")
+        elif self.password:
+            self.connection_status.setText("Connected to Funkwhale")
+        else:
+            self.connection_status.setText("Connect your music library")
+
+    def add_local_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add music to queue",
+            str(Path.home()),
+            "Audio files (*.mp3 *.m4a *.aac *.wav *.flac *.ogg *.opus *.wma);;All files (*.*)",
+        )
+        if not paths:
+            return
+        existing = {track.get("path") for track in self.queue if track.get("source") == "local"}
+        for raw_path in paths:
+            path = Path(raw_path)
+            if str(path) in existing:
+                continue
+            self.queue.append({
+                "id": str(path),
+                "path": str(path),
+                "source": "local",
+                "name": path.stem,
+                "artist": "On this device",
+                "album": path.parent.name,
+            })
+        self.source_combo.setCurrentIndex(self.source_combo.findData("local"))
+        self.render_queue()
+        if self.queue:
+            self.connection_status.setText(f"{len(self.queue)} track(s) in your local queue")
+
+    def render_queue(self):
+        self.song_list.clear()
+        for index, track in enumerate(self.queue):
+            title = str(track.get("name", "Untitled"))
+            artist = str(track.get("artist", "Unknown artist"))
+            album = str(track.get("album", ""))
+            source_label = "On this device" if track.get("source") == "local" else "Funkwhale"
+            detail = "  ·  ".join(value for value in (artist, album, source_label) if value)
+            item = QListWidgetItem(f"{title}\n{detail}")
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            self.song_list.addItem(item)
+        if 0 <= self.current_index < self.song_list.count():
+            self.song_list.setCurrentRow(self.current_index)
+
+    def saved_playlists(self) -> dict[str, list[dict[str, Any]]]:
+        raw_value = self.settings.value("studyPlaylists", "{}")
+        try:
+            payload = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(name): [track for track in tracks if isinstance(track, dict)]
+            for name, tracks in payload.items()
+            if isinstance(tracks, list)
+        }
+
+    def save_playlist(self):
+        if not self.queue:
+            self.connection_status.setText("Add some tracks before saving a playlist.")
+            return
+        name, accepted = QInputDialog.getText(
+            self, "Save playlist", "Playlist name", QLineEdit.EchoMode.Normal, "Study playlist"
+        )
+        name = " ".join(name.split())
+        if not accepted or not name:
+            return
+        playlists = self.saved_playlists()
+        if name in playlists:
+            answer = QMessageBox.question(
+                self,
+                "Replace playlist?",
+                f"A playlist named ‘{name}’ already exists. Replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        playlists[name] = [
+            {key: value for key, value in track.items()
+             if key in {"id", "path", "source", "name", "artist", "album"}}
+            for track in self.queue
+        ]
+        self.settings.setValue("studyPlaylists", json.dumps(playlists, ensure_ascii=False))
+        self.connection_status.setText(f"Saved ‘{name}’ on this device")
+
+    def load_playlist(self):
+        playlists = self.saved_playlists()
+        if not playlists:
+            self.connection_status.setText("No saved playlists yet. Build a queue and choose Save playlist.")
+            return
+        names = sorted(playlists, key=str.casefold)
+        name, accepted = QInputDialog.getItem(self, "My playlists", "Choose a playlist", names, 0, False)
+        if not accepted or name not in playlists:
+            return
+        tracks = playlists[name]
+        missing_local = sum(
+            1 for track in tracks
+            if track.get("source") == "local" and not Path(str(track.get("path", ""))).is_file()
+        )
+        self.queue = tracks
+        self.current_index = -1
+        self.render_queue()
+        if self.queue and all(track.get("source") == "local" for track in self.queue):
+            self.source_combo.setCurrentIndex(self.source_combo.findData("local"))
+        elif self.queue:
+            self.source_combo.setCurrentIndex(self.source_combo.findData("funkwhale"))
+        if missing_local:
+            self.connection_status.setText(
+                f"Loaded ‘{name}’; {missing_local} local file(s) moved or missing."
+            )
+        else:
+            self.connection_status.setText(f"Loaded ‘{name}’ · {len(self.queue)} track(s)")
+
+    def play_track(self, index: int):
+        if self.player is None or not self.queue:
+            self.connection_status.setText("Audio playback is unavailable")
+            return
+        if not 0 <= index < len(self.queue):
+            return
+        if self.worker is not None and self.worker.isRunning():
+            self.connection_status.setText("Finishing the previous library request… try again in a moment.")
+            return
+        self.current_index = index
+        track = self.queue[index]
+        self.pending_track = track
+        self.render_queue()
+        self.now_playing.setText(str(track.get("name", "Untitled")))
+        self.now_artist.setText(str(track.get("artist", "Unknown artist")))
+        self.position_slider.setRange(0, 0)
+        self.elapsed_label.setText("0:00")
+        self.duration_label.setText("0:00")
+        if track.get("source") == "local":
+            local_path = Path(str(track.get("path", "")))
+            if not local_path.is_file():
+                self.connection_status.setText("That local music file is no longer available.")
+                return
+            self.player.setSource(QUrl.fromLocalFile(str(local_path)))
+            self.player.play()
+            self.connection_status.setText("Playing from this device")
+            return
+        self.connection_status.setText("Connecting to your pod…")
+        self.request("stream", track=track)
+
+    def play_next(self):
+        if not self.queue:
+            return
+        if self._shuffle and len(self.queue) > 1:
+            choices = [index for index in range(len(self.queue)) if index != self.current_index]
+            self.play_track(random.choice(choices))
+            return
+        next_index = self.current_index + 1
+        if next_index < len(self.queue):
+            self.play_track(max(0, next_index))
+        else:
+            self.stop_playback()
+            self.connection_status.setText("Queue finished")
+
+    def play_previous(self):
+        if not self.queue:
+            return
+        if self.current_index < 0:
+            self.play_track(0)
+            return
+        player = self.player
+        if player is not None and player.position() > 3000:
+            player.setPosition(0)
+            return
+        self.play_track((self.current_index - 1) % len(self.queue))
+
+    @staticmethod
+    def format_time(milliseconds: int) -> str:
+        total_seconds = max(0, milliseconds // 1000)
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+    def update_position(self, position: int):
+        if not self._seeking:
+            self.position_slider.setValue(position)
+        self.elapsed_label.setText(self.format_time(position))
+
+    def update_duration(self, duration: int):
+        self.position_slider.setRange(0, max(0, duration))
+        self.duration_label.setText(self.format_time(duration))
+
+    def seek_to_position(self):
+        self._seeking = False
+        if self.player is not None:
+            self.player.setPosition(self.position_slider.value())
+
+    def set_volume(self, value: int):
+        if self.audio_output is not None:
+            self.audio_output.setVolume(max(0, min(100, value)) / 100.0)
+        self.settings.setValue("musicVolume", max(0, min(100, value)) / 100.0)
+
+    def toggle_focus_session(self):
+        if self.focus_timer.isActive():
+            self.focus_timer.stop()
+            self.focus_remaining_seconds = 0
+            self.focus_button.setText("Start focus")
+            self.focus_status.setText("Focus timer paused")
+            return
+        minutes = int(self.focus_duration.currentData() or 25)
+        self.focus_remaining_seconds = minutes * 60
+        self.focus_timer.start()
+        self.focus_button.setText("End session")
+        self.tick_focus_session()
+
+    def tick_focus_session(self):
+        if self.focus_remaining_seconds <= 0:
+            self.focus_timer.stop()
+            self.stop_playback()
+            self.focus_button.setText("Start focus")
+            self.focus_status.setText("Session complete · take a short break")
+            self.connection_status.setText("Focus session complete")
+            return
+        minutes, seconds = divmod(self.focus_remaining_seconds, 60)
+        self.focus_status.setText(f"Focus time · {minutes:02d}:{seconds:02d} remaining")
+        self.focus_remaining_seconds -= 1
+
+    def on_media_status(self, status):
+        if QMediaPlayer is not None and status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if self._repeat and self.current_index >= 0:
+                self.play_track(self.current_index)
+            else:
+                self.play_next()
 
     def configure_connection(self):
         dialog = QDialog(self)
@@ -812,6 +1184,7 @@ class FunkwhaleMusicPlayerDialog(QDialog):
         self.settings.setValue("funkwhaleUsername", self.username)
         self.server_label.setText(self.server_url or "No Funkwhale pod configured")
         self.connection_status.setText("Checking Funkwhale connection…")
+        self.source_combo.setCurrentIndex(self.source_combo.findData("funkwhale"))
         self.request("ping")
 
     def request(self, operation: str, query: str = "", track: Optional[dict[str, Any]] = None):
@@ -831,6 +1204,9 @@ class FunkwhaleMusicPlayerDialog(QDialog):
         self.worker.start()
 
     def search_library(self):
+        if self.source_combo.currentData() == "local":
+            self.connection_status.setText("Use Add files to build a local queue.")
+            return
         query = self.search_input.text().strip()
         if query:
             self.connection_status.setText("Searching Funkwhale…")
@@ -845,25 +1221,19 @@ class FunkwhaleMusicPlayerDialog(QDialog):
             if self.player is None:
                 self.connection_status.setText("QtMultimedia playback is unavailable")
                 return
-            track = self.pending_track or {}
-            self.now_playing.setText(
-                f"{track.get('name', 'Untitled')}  ·  {track.get('artist', 'Unknown artist')}"
-            )
             self.player.setSource(QUrl(stream_url))
             self.player.play()
             self.connection_status.setText("Starting playback…")
             return
 
         tracks = result if isinstance(result, list) else []
-        self.song_list.clear()
-        for track in tracks:
-            title = str(track.get("name", "Untitled"))
-            artist = str(track.get("artist", "Unknown artist"))
-            album = str(track.get("album", ""))
-            item = QListWidgetItem(f"{title}\n{artist}" + (f"  ·  {album}" if album else ""))
-            item.setData(Qt.ItemDataRole.UserRole, track)
-            self.song_list.addItem(item)
-        self.connection_status.setText(f"{self.song_list.count()} track(s) found on this pod")
+        self.queue = [
+            track | {"source": "funkwhale"}
+            for track in tracks if isinstance(track, dict) and track.get("id")
+        ]
+        self.current_index = -1
+        self.render_queue()
+        self.connection_status.setText(f"{len(self.queue)} track(s) found on this pod")
 
     def on_request_failed(self, operation: str, message: str):
         self.connection_status.setText(f"Funkwhale {operation} failed: {message}")
@@ -878,15 +1248,9 @@ class FunkwhaleMusicPlayerDialog(QDialog):
         item = item or self.song_list.currentItem()
         if item is None:
             return
-        track = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(track, dict) or not track.get("id"):
-            return
-        if self.player is None:
-            self.connection_status.setText("QtMultimedia playback is unavailable")
-            return
-        self.pending_track = track
-        self.connection_status.setText("Resolving audio stream…")
-        self.request("stream", track=track)
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, int):
+            self.play_track(index)
 
     def toggle_playback(self):
         player = self.player
@@ -902,7 +1266,18 @@ class FunkwhaleMusicPlayerDialog(QDialog):
             self.player.stop()
             self.player.setSource(QUrl())
             self.now_playing.setText("Playback stopped")
+            self.now_artist.setText("Choose another track whenever you like")
+            self.position_slider.setRange(0, 0)
+            self.elapsed_label.setText("0:00")
+            self.duration_label.setText("0:00")
         self.pending_track = None
+
+    def end_session(self):
+        self.focus_timer.stop()
+        self.focus_remaining_seconds = 0
+        self.stop_playback()
+        self.password = ""
+        self.hide()
 
     def update_play_button(self, state):
         if QMediaPlayer is not None and state == QMediaPlayer.PlaybackState.PlayingState:
@@ -2398,6 +2773,14 @@ class NotebookWindow(QMainWindow):
         self.ai_toggle_btn.setToolTip("Show or hide RobustNotes AI chat")
         self.ai_toggle_btn.toggled.connect(self.toggle_ai_sidebar)
         layout.addWidget(self.ai_toggle_btn)
+
+        self.music_toggle_btn = QPushButton("♪")
+        self.music_toggle_btn.setObjectName("IconButton")
+        self.music_toggle_btn.setFixedSize(38, 36)
+        self.music_toggle_btn.setAccessibleName("Study Music")
+        self.music_toggle_btn.setToolTip("Open the separate Study Music player")
+        self.music_toggle_btn.clicked.connect(self.open_music_player)
+        layout.addWidget(self.music_toggle_btn)
 
         layout.addStretch(1)
 
@@ -4074,6 +4457,7 @@ class NotebookWindow(QMainWindow):
     def open_music_player(self) -> None:
         if self.music_dialog is None:
             self.music_dialog = FunkwhaleMusicPlayerDialog(self, self.ai_settings)
+        self.music_dialog.setModal(False)
         self.music_dialog.show()
         self.music_dialog.raise_()
         self.music_dialog.activateWindow()
@@ -5163,9 +5547,7 @@ class WorkspaceWindow(QMainWindow):
             if isinstance(window, NotebookWindow):
                 music = window.music_dialog
                 if music is not None:
-                    music.stop_playback()
-                    music.password = ""
-                    music.hide()
+                    music.end_session()
             window.close()
         self.open_windows.clear()
         self.profile = None

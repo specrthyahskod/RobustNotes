@@ -19,8 +19,8 @@ android {
         applicationId = "com.robustnotes.mobile"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     buildFeatures { compose = true }
@@ -56,6 +56,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("com.google.android.play:app-update-ktx:2.1.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 

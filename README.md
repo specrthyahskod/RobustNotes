@@ -74,9 +74,9 @@ These are RobustNotes' product priorities and the way its features are put toget
 - Toggle the page-aware AI sidebar open or closed.
 - Ask questions using the current page image and any available imported PDF or OCR text.
 - Optional voice input converts speech to text locally when the speech-recognition dependencies are installed.
-- Search and stream tracks from a connected [Funkwhale](https://funkwhale.audio/) pod in the embedded music panel. Funkwhale is open-source, self-hosted, and federated; the app connects through the pod's Subsonic-compatible API.
+- Open Study Music from the editor toolbar in a separate, non-modal window. Close it to return to the canvas while music continues playing. Queue local audio files or search and stream tracks from a connected [Funkwhale](https://funkwhale.audio/) pod. The player includes saved playlists, queue navigation, shuffle/repeat, seeking, saved volume, and optional 25/50/90-minute focus sessions that stop playback when time is up.
 
-**Music setup and privacy:** open the workspace overflow menu, choose **Open music player**, then select **Connect**. Enter your Funkwhale pod URL and username, and paste a Subsonic API password generated in your Funkwhale account settings. RobustNotes sends search and playback requests directly to that pod. The API password stays in memory for the current player session; the pod URL and username are saved locally. You need an account on a Funkwhale pod with playable music in its library; RobustNotes does not provide or host a music catalog. Funkwhale does not grant a blanket license to music stored on a pod; each track's rights depend on its uploader and license. Funkwhale's [Subsonic API documentation](https://docs.funkwhale.audio/developer/api/subsonic.html) lists the endpoints used by the player.
+**Music setup and privacy:** choose **My music files** to add audio from this device, or select **Funkwhale library** and choose **Connect**. Enter your pod URL and username, then paste the Subsonic API password generated in your Funkwhale account settings. Search and playback requests go directly to that pod. The API password is held in memory only; the pod URL, username, volume preference, and playlists you explicitly save are stored locally. Saved local playlists contain file paths, not audio. RobustNotes does not host or license a music catalog; the rights for Funkwhale tracks depend on their uploader. See Funkwhale's [Subsonic API documentation](https://docs.funkwhale.audio/developer/api/subsonic.html).
 
 **AI integration status:** the current desktop chat adapter expects a locally hosted Ollama-compatible chat endpoint (configurable in the app or with `ROBUSTNOTES_OLLAMA_URL` and `ROBUSTNOTES_MODEL`). RobustNotes' own trained SLM and its runtime are not included in this repository yet; connecting that model is future integration work.
 
@@ -97,7 +97,7 @@ These are RobustNotes' product priorities and the way its features are put toget
 | Linux desktop | Run from Python or build on Linux with PyInstaller; builds must be made on the target OS |
 | Android | Native Kotlin/Jetpack Compose offline text-notes app with create, edit, search, and delete |
 
-The Android app is an initial text-notes release, not desktop feature parity. It currently has no handwritten notebook canvas, PDF support, OCR, AI chat, or whiteboards. It targets API 36 for new Play Store submissions. Android builds need Android SDK Platform 36 and JDK 17 or 21.
+The Android app is an initial text-notes release, not desktop feature parity. It currently has no handwritten notebook canvas, PDF support, OCR, AI chat, or whiteboards. It targets API 36 for new Play Store submissions. Android builds need Android SDK Platform 36 and JDK 17 or 21. The app checks for updates through Google Play and offers a flexible in-app update; this is available only to Play-distributed installs. Sideloaded APKs need a manual install of the newer APK. Notes remain on-device and are not included in update checks.
 
 ## Run from source
 

@@ -1,8 +1,10 @@
 # RobustNotes for Android
 
-The Android app is a native, offline-first text notes app. It has note creation and editing, title/body search, deletion confirmation, and atomic local persistence in Android's app-private storage. It does not request network or broad storage permissions, and Android backup is disabled. Notes are not synced to the desktop app or another device.
+The Android app is a native, offline-first text notes app. It has note creation and editing, title/body search, deletion confirmation, and atomic local persistence in Android's app-private storage. It uses network access only for Google Play's app-update flow and does not request broad storage permissions. Android backup is disabled. Notes are not synced to the desktop app or another device.
 
 This is an initial Android release, not feature parity with the Windows desktop app. It does not currently include handwritten notebooks, stylus drawing, PDF annotation, OCR, AI chat, or whiteboards. The website and desktop feature list should not imply that those features are already available on Android.
+
+The app checks Google Play for updates when it opens and also has an **Updates** action in the top bar. Updates use Google Play's flexible in-app update flow, so the user can keep using notes while an update downloads, then choose when to restart. In-app updates work only for installs distributed by Google Play (including its internal testing tracks) and signed for the same Play app. A manually installed APK must be updated by installing a newer APK; the app does not request permission to silently install packages or download installers from arbitrary sources. Note content is not sent as part of an update check.
 
 ## Build a debug APK
 
@@ -29,12 +31,12 @@ keytool -genkeypair -v -keystore "$env:USERPROFILE\robustnotes-upload.jks" -keya
 
 Before building, set these four environment variables in the same PowerShell session: `ROBUSTNOTES_UPLOAD_KEYSTORE`, `ROBUSTNOTES_UPLOAD_STORE_PASSWORD`, `ROBUSTNOTES_UPLOAD_KEY_ALIAS`, and `ROBUSTNOTES_UPLOAD_KEY_PASSWORD`. The release task fails if signing is not configured. Then build from `mobile\android`:
 
-The policy page to enter in Play Console is `https://robustnotes.com/privacy.html`; it is also linked in the Android app's top bar. Verify the public URL is live over HTTPS before submitting. Complete the Play Console Data safety form to match the release artifact and its dependencies.
+The policy page to enter in Play Console is `https://robustnotes.com/privacy.html`; it is also linked in the Android app's top bar. Verify the public URL is live over HTTPS before submitting. Complete the Play Console Data safety form to match the release artifact and its dependencies, including Google Play's update SDK.
 
 ```powershell
 .\gradlew.bat bundleRelease
 ```
 
-The AAB is written to `app\build\outputs\bundle\release\app-release.aab`. Confirm it is signed with the intended upload key before uploading it. Set the Play Console app access, content rating, Data safety, privacy policy, store listing, screenshots, and any account-specific closed-testing requirements there. The current build stores note data locally and has no network permission; review the generated bundle and Play Console declarations before publishing.
+The AAB is written to `app\build\outputs\bundle\release\app-release.aab`. Confirm it is signed with the intended upload key before uploading it. Set the Play Console app access, content rating, Data safety, privacy policy, store listing, screenshots, and any account-specific closed-testing requirements there. Notes remain local; the only new network access is for Play-managed app updates. Review the generated bundle and Play Console declarations before publishing.
 
-For a version update, increment `versionCode` and `versionName` in `app\build.gradle.kts` before building again.
+For each Play release, increment `versionCode` and update `versionName` in `app\build.gradle.kts`, then build and upload a newly signed AAB. The in-app updater will offer that release after Google Play makes it available to the account/device. Test the flow with Play internal testing or internal app sharing; installing a debug APK directly does not emulate a Play-distributed install.

@@ -1,9 +1,13 @@
 package com.robustnotes.mobile
 
+import android.os.Build
 import android.os.Bundle
 import android.util.AtomicFile
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -48,6 +52,15 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.google.android.play.core.appupdate.AppUpdateInfo
+import com.google.android.play.core.appupdate.AppUpdateManager
+import com.google.android.play.core.appupdate.AppUpdateManagerFactory
+import com.google.android.play.core.appupdate.AppUpdateOptions
+import com.google.android.play.core.install.InstallState
+import com.google.android.play.core.install.InstallStateUpdatedListener
+import com.google.android.play.core.install.model.AppUpdateType
+import com.google.android.play.core.install.model.InstallStatus
+import com.google.android.play.core.install.model.UpdateAvailability
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -68,8 +81,42 @@ private val Accent = Color(0xFF15A9B8)
 private val AccentSoft = Color(0xFFE5F7F8)
 
 class MainActivity : ComponentActivity() {
+    private lateinit var appUpdateManager: AppUpdateManager
+    private lateinit var updateLauncher: ActivityResultLauncher<IntentSenderRequest>
+    private val updateMessage = mutableStateOf<String?>(null)
+    private val updateDownloaded = mutableStateOf(false)
+    private val manualDownloadAvailable = mutableStateOf(false)
+    private val updateAvailable = mutableStateOf(false)
+
+    private val updateListener = InstallStateUpdatedListener { state: InstallState ->
+        when (state.installStatus()) {
+            InstallStatus.DOWNLOADING -> {
+                val downloaded = state.bytesDownloaded()
+                val total = state.totalBytesToDownload()
+                updateMessage.value = if (total > 0L) {
+                    "Downloading update · ${downloaded * 100 / total}%"
+                } else {
+                    "Downloading update…"
+                }
+            }
+            InstallStatus.DOWNLOADED -> {
+                updateDownloaded.value = true
+                updateMessage.value = "The update is ready. Restart RobustNotes to finish installing it."
+            }
+            InstallStatus.FAILED -> updateMessage.value = "The update could not be downloaded. Please try again later."
+            InstallStatus.CANCELED -> updateMessage.value = "Update postponed. You can check again any time."
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        updateLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            if (result.resultCode == RESULT_CANCELED) {
+                updateMessage.value = "Update postponed. You can check again any time."
+            }
+        }
+        appUpdateManager = AppUpdateManagerFactory.create(this)
+        appUpdateManager.registerListener(updateListener)
         val noteStore = AtomicFile(File(filesDir, "notes.json"))
         val initialNotes = readNotes(noteStore)
         setContent {
@@ -86,11 +133,91 @@ class MainActivity : ComponentActivity() {
                     NotesApp(
                         initialNotes = initialNotes,
                         onPersist = { notes -> writeNotes(noteStore, notes) },
+                        updateMessage = updateMessage.value,
+                        updateDownloaded = updateDownloaded.value,
+                        manualDownloadAvailable = manualDownloadAvailable.value,
+                        updateAvailable = updateAvailable.value,
+                        onCheckForUpdates = { checkForUpdates(showStatus = true) },
+                        onDismissUpdate = { updateMessage.value = null },
+                        onCompleteUpdate = { appUpdateManager.completeUpdate() },
                     )
                 }
             }
         }
+        // Check quietly on launch; only start the Play update when the user taps Updates.
+        checkForUpdates(showStatus = false)
     }
+
+    override fun onDestroy() {
+        if (::appUpdateManager.isInitialized) appUpdateManager.unregisterListener(updateListener)
+        super.onDestroy()
+    }
+
+    private fun checkForUpdates(showStatus: Boolean) {
+        manualDownloadAvailable.value = false
+        updateAvailable.value = false
+        appUpdateManager.appUpdateInfo
+            .addOnSuccessListener { info -> handleUpdateInfo(info, showStatus) }
+            .addOnFailureListener {
+                if (showStatus) {
+                    if (installedFromGooglePlay()) {
+                        updateMessage.value = "Could not check Google Play for an update. Check your connection and try again."
+                    } else {
+                        showManualApkUpdate()
+                    }
+                }
+            }
+    }
+
+    private fun handleUpdateInfo(info: AppUpdateInfo, showStatus: Boolean) {
+        if (info.installStatus() == InstallStatus.DOWNLOADED) {
+            updateDownloaded.value = true
+            updateMessage.value = "The update is ready. Restart RobustNotes to finish installing it."
+            return
+        }
+        if (!installedFromGooglePlay()) {
+            updateAvailable.value = false
+            if (showStatus) showManualApkUpdate()
+            return
+        }
+        val availability = info.updateAvailability()
+        if ((availability == UpdateAvailability.UPDATE_AVAILABLE ||
+             availability == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS) &&
+            info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)
+        ) {
+            updateAvailable.value = true
+            if (!showStatus) return
+            appUpdateManager.startUpdateFlowForResult(
+                info,
+                updateLauncher,
+                AppUpdateOptions.newBuilder(AppUpdateType.FLEXIBLE).build(),
+            ).addOnFailureListener {
+                if (showStatus) updateMessage.value = "Could not start the update. Please try again later."
+            }
+        } else if ((availability == UpdateAvailability.UPDATE_AVAILABLE ||
+                    availability == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS) && showStatus) {
+            updateAvailable.value = true
+            updateMessage.value = "A RobustNotes update is available. Open Google Play to install it."
+        } else if (showStatus) {
+            updateAvailable.value = false
+            updateMessage.value = "RobustNotes is up to date."
+        }
+    }
+
+    private fun showManualApkUpdate() {
+        manualDownloadAvailable.value = true
+        updateMessage.value = "This preview install updates through the RobustNotes website. Download the latest APK, then open it to install the update."
+    }
+
+    private fun installedFromGooglePlay(): Boolean = runCatching {
+        val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            packageManager.getInstallSourceInfo(packageName).installingPackageName
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.getInstallerPackageName(packageName)
+        }
+        installer == "com.android.vending"
+    }.getOrDefault(false)
 
     private fun readNotes(store: AtomicFile): List<LocalNote> = runCatching {
         val raw = store.openRead().bufferedReader().use { it.readText() }
@@ -135,6 +262,13 @@ class MainActivity : ComponentActivity() {
 private fun NotesApp(
     initialNotes: List<LocalNote>,
     onPersist: (List<LocalNote>) -> Boolean,
+    updateMessage: String?,
+    updateDownloaded: Boolean,
+    manualDownloadAvailable: Boolean,
+    updateAvailable: Boolean,
+    onCheckForUpdates: () -> Unit,
+    onDismissUpdate: () -> Unit,
+    onCompleteUpdate: () -> Unit,
 ) {
     var notes by remember { mutableStateOf(initialNotes.sortedByDescending { it.updated }) }
     var search by rememberSaveable { mutableStateOf("") }
@@ -203,6 +337,9 @@ private fun NotesApp(
                         }
                     },
                     actions = {
+                        TextButton(onClick = onCheckForUpdates) {
+                            Text(if (updateAvailable) "Update ready" else "Updates")
+                        }
                         TextButton(onClick = { uriHandler.openUri("https://robustnotes.com/privacy.html") }) {
                             Text("Privacy policy")
                         }
@@ -272,6 +409,28 @@ private fun NotesApp(
                 TextButton(onClick = { remove(note) }) { Text("Delete", color = Color(0xFFB3261E)) }
             },
             dismissButton = { TextButton(onClick = { pendingDelete = null; deleteFailed = false }) { Text("Keep note") } },
+        )
+    }
+
+    updateMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = onDismissUpdate,
+            title = { Text(if (updateDownloaded) "Update ready" else "App updates") },
+            text = { Text(message) },
+            confirmButton = {
+                if (updateDownloaded) {
+                    TextButton(onClick = onCompleteUpdate) { Text("Restart and update") }
+                } else {
+                    TextButton(onClick = onDismissUpdate) { Text("Okay") }
+                }
+            },
+            dismissButton = {
+                if (manualDownloadAvailable) {
+                    TextButton(onClick = { uriHandler.openUri("https://robustnotes.com/#download") }) { Text("Get APK") }
+                } else if (updateDownloaded) {
+                    TextButton(onClick = onDismissUpdate) { Text("Later") }
+                }
+            },
         )
     }
 }
