@@ -187,12 +187,14 @@ class MainActivity : ComponentActivity() {
         ) {
             updateAvailable.value = true
             if (!showStatus) return
-            appUpdateManager.startUpdateFlowForResult(
-                info,
-                updateLauncher,
-                AppUpdateOptions.newBuilder(AppUpdateType.FLEXIBLE).build(),
-            ).addOnFailureListener {
-                if (showStatus) updateMessage.value = "Could not start the update. Please try again later."
+            try {
+                appUpdateManager.startUpdateFlowForResult(
+                    info,
+                    updateLauncher,
+                    AppUpdateOptions.newBuilder(AppUpdateType.FLEXIBLE).build(),
+                )
+            } catch (_: Exception) {
+                updateMessage.value = "Could not start the update. Please try again later."
             }
         } else if ((availability == UpdateAvailability.UPDATE_AVAILABLE ||
                     availability == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS) && showStatus) {
