@@ -1,5 +1,5 @@
 #define AppName "RobustNotes"
-#define AppVersion "0.1.4"
+#define AppVersion "0.1.5"
 #define AppPublisher "RobustNotes"
 #define AppExeName "RobustNotes.exe"
 
@@ -25,7 +25,7 @@ CloseApplications=yes
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\dist\RobustNotes\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\RobustNotes.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\RobustNotes"; Filename: "{app}\{#AppExeName}"

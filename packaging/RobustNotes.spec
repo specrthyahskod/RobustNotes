@@ -39,8 +39,9 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="RobustNotes",
     debug=False,
     bootloader_ignore_signals=False,
@@ -56,4 +57,3 @@ exe = EXE(
     entitlements_file=None,
     icon=str(ASSETS / "robustnotes-icon.ico"),
 )
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="RobustNotes")

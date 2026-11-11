@@ -31,7 +31,7 @@ from typing import Any, Optional, Sequence, TypedDict, cast
 from urllib.parse import urlencode, urlparse
 
 
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 UPDATE_REPOSITORY = "specrthyahskod/RobustNotes-"
 
 
