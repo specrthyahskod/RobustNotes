@@ -78,6 +78,14 @@ These are RobustNotes' product priorities and the way its features are put toget
 
 **Music setup and privacy:** choose **My music files** to add audio from this device, or select **Funkwhale library** and choose **Connect**. Enter your pod URL and username, then paste the Subsonic API password generated in your Funkwhale account settings. Search and playback requests go directly to that pod. The API password is held in memory only; the pod URL, username, volume preference, and playlists you explicitly save are stored locally. Saved local playlists contain file paths, not audio. RobustNotes does not host or license a music catalog; the rights for Funkwhale tracks depend on their uploader. See Funkwhale's [Subsonic API documentation](https://docs.funkwhale.audio/developer/api/subsonic.html).
 
+#### Quick guide: Study Music
+
+1. In a notebook, select the **♪** button on the editor toolbar. Study Music opens in its own window, so the page stays available.
+2. For audio already on your device, choose **My music files** → **Add files…** and select tracks. Double-click a track (or select it and press Enter) to play it. RobustNotes reads the file in place; it does not copy or upload your music.
+3. To use a Funkwhale library, choose **Funkwhale library** → **Connect…**. Enter the pod address, your username, and the Subsonic API password from your Funkwhale account settings. Search for a song, artist, or album, then double-click a result to play it. You need access to a Funkwhale pod; RobustNotes does not provide a streaming catalog.
+4. Use the player controls to pause, skip, seek, shuffle, repeat, stop, or adjust volume. Choose **Save playlist** to save the current queue on this device, and **My playlists** to load it later. A playlist with local tracks stores their file paths, so moving or deleting a source file makes that playlist entry unavailable.
+5. Start a **25**, **50**, or **90-minute Focus session** to stop music when the timer ends. Closing the Study Music window leaves playback running; logging out stops playback and clears the Funkwhale API password from memory.
+
 **AI integration status:** the current desktop chat adapter expects a locally hosted Ollama-compatible chat endpoint (configurable in the app or with `ROBUSTNOTES_OLLAMA_URL` and `ROBUSTNOTES_MODEL`). RobustNotes' own trained SLM and its runtime are not included in this repository yet; connecting that model is future integration work.
 
 ### Privacy, backup, and recovery
