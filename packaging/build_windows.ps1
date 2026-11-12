@@ -1,6 +1,16 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
+$appVersionMatch = [regex]::Match((Get-Content (Join-Path $projectRoot "canvas_app.py") -Raw), '(?m)^APP_VERSION\s*=\s*"([^"]+)"\s*$')
+$installerVersionMatch = [regex]::Match((Get-Content (Join-Path $PSScriptRoot "RobustNotes.iss") -Raw), '(?m)^#define AppVersion "([^"]+)"\s*$')
+if (-not $appVersionMatch.Success -or -not $installerVersionMatch.Success) {
+    throw "Could not read the app and installer version values."
+}
+$appVersion = $appVersionMatch.Groups[1].Value
+$installerVersion = $installerVersionMatch.Groups[1].Value
+if ($appVersion -ne $installerVersion) {
+    throw "Version mismatch: canvas_app.py is $appVersion but RobustNotes.iss is $installerVersion."
+}
 $legacyOnedirPath = Join-Path $projectRoot "dist\RobustNotes"
 $singleFilePath = Join-Path $projectRoot "dist\RobustNotes.exe"
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import ast
 import base64
+import ctypes
 import hashlib
 import os
 import html
@@ -31,8 +32,82 @@ from typing import Any, Optional, Sequence, TypedDict, cast
 from urllib.parse import urlencode, urlparse
 
 
-APP_VERSION = "0.1.5"
-UPDATE_REPOSITORY = "specrthyahskod/RobustNotes-"
+APP_VERSION = "1.0.6"
+UPDATE_REPOSITORY = "specrthyahskod/RobustNotes"
+
+
+_ACTIVE_BACKGROUND_WORKERS: set[Any] = set()
+_ACTIVE_BACKGROUND_WORKERS_LOCK = threading.Lock()
+
+
+def retain_background_worker(worker: QThread) -> None:
+    """Keep a running Qt thread alive if its owning window closes first."""
+    with _ACTIVE_BACKGROUND_WORKERS_LOCK:
+        _ACTIVE_BACKGROUND_WORKERS.add(worker)
+
+    def release() -> None:
+        with _ACTIVE_BACKGROUND_WORKERS_LOCK:
+            _ACTIVE_BACKGROUND_WORKERS.discard(worker)
+
+    worker.finished.connect(release)
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+def protect_remembered_login(payload: bytes) -> bytes:
+    """Encrypt sign-in data for the current Windows account using DPAPI."""
+    if sys.platform != "win32":
+        raise OSError("Remembered sign-in is only supported on Windows.")
+    source_buffer = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
+    source = _DataBlob(len(payload), ctypes.cast(source_buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    encrypted = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    crypt32.CryptProtectData.argtypes = [
+        ctypes.POINTER(_DataBlob), ctypes.c_wchar_p, ctypes.POINTER(_DataBlob),
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(_DataBlob),
+    ]
+    crypt32.CryptProtectData.restype = ctypes.c_int
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    if not crypt32.CryptProtectData(
+        ctypes.byref(source), "RobustNotes saved sign-in", None, None, None, 0x1,
+        ctypes.byref(encrypted),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(encrypted.pbData, encrypted.cbData)
+    finally:
+        kernel32.LocalFree(encrypted.pbData)
+
+
+def unprotect_remembered_login(payload: bytes) -> bytes:
+    """Decrypt a DPAPI sign-in record for the current Windows account."""
+    if sys.platform != "win32":
+        raise OSError("Remembered sign-in is only supported on Windows.")
+    source_buffer = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
+    source = _DataBlob(len(payload), ctypes.cast(source_buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    decrypted = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    crypt32.CryptUnprotectData.argtypes = [
+        ctypes.POINTER(_DataBlob), ctypes.POINTER(ctypes.c_wchar_p),
+        ctypes.POINTER(_DataBlob), ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.POINTER(_DataBlob),
+    ]
+    crypt32.CryptUnprotectData.restype = ctypes.c_int
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(source), None, None, None, None, 0x1, ctypes.byref(decrypted)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(decrypted.pbData, decrypted.cbData)
+    finally:
+        kernel32.LocalFree(decrypted.pbData)
 
 
 def restore_workspace_archive(archive: zipfile.ZipFile, destination: Path) -> None:
@@ -269,19 +344,22 @@ class UpdateCheckWorker(QThread):
             assets = release.get("assets", [])
             if not isinstance(assets, list):
                 raise RuntimeError("The latest release has an invalid asset list.")
+            expected_installer = f"robustnotes-setup-{tag.removeprefix('v').removeprefix('V')}.exe".casefold()
             for asset in assets:
                 if not isinstance(asset, dict):
                     continue
                 name = str(asset.get("name", ""))
                 url = str(asset.get("browser_download_url", ""))
-                if name.casefold().endswith(".exe") and name.casefold().startswith("robustnotes-setup-"):
+                if name.casefold() == expected_installer:
                     parsed = urlparse(url)
                     if parsed.scheme != "https" or parsed.hostname != "github.com":
                         raise RuntimeError("The release installer URL is not a trusted GitHub URL.")
                     digest = str(asset.get("digest", ""))
                     self.update_available.emit(tag, url, digest)
                     return
-            raise RuntimeError("The latest release does not include a RobustNotes Windows installer.")
+            raise RuntimeError(
+                f"The latest release must include the matching installer asset {expected_installer}."
+            )
         except Exception as error:
             self.request_failed.emit(f"Could not check for updates: {error}")
 
@@ -1201,6 +1279,7 @@ class FunkwhaleMusicPlayerDialog(QDialog):
         self.worker.completed.connect(self.on_request_complete)
         self.worker.failed.connect(self.on_request_failed)
         self.worker.finished.connect(self.release_worker)
+        retain_background_worker(self.worker)
         self.worker.start()
 
     def search_library(self):
@@ -1676,7 +1755,6 @@ class SmoothCanvasView(QGraphicsView):
         self.points: list[QPointF] = []
         self.current_path: Optional[QPainterPath] = None
         self.current_item: Optional[QGraphicsPathItem] = None
-        self.shape_has_snapped = False
         self.erased_in_drag: list[QGraphicsItem] = []
         self.lasso_path_item: Optional[QGraphicsPathItem] = None
         self.moving_items_before: Optional[list[tuple[QGraphicsItem, QPointF, float]]] = None
@@ -1854,6 +1932,7 @@ class SmoothCanvasView(QGraphicsView):
         if not scene.page_rect.contains(scene_pos):
             event.accept()
             return
+            return
 
         if self.current_mode == "TEXT":
             hit_item = scene.itemAt(scene_pos, self.transform())
@@ -1913,7 +1992,6 @@ class SmoothCanvasView(QGraphicsView):
             return
 
         self.is_drawing = True
-        self.shape_has_snapped = False
         if self.current_mode != "LASSO":
             inset = self.make_pen().widthF() / 2.0 + 1.0
             scene_pos = self._page_point(scene_pos, inset)
@@ -1954,11 +2032,6 @@ class SmoothCanvasView(QGraphicsView):
             event.accept()
             return
 
-        if self.shape_has_snapped:
-            self.update_snapped_preview(scene_pos)
-            event.accept()
-            return
-
         if not self.current_path or not self.current_item:
             return
 
@@ -1971,7 +2044,10 @@ class SmoothCanvasView(QGraphicsView):
             (previous.x() + scene_pos.x()) / 2.0,
             (previous.y() + scene_pos.y()) / 2.0,
         )
-        self.current_path.quadTo(previous, midpoint)
+        if len(self.points) == 2:
+            self.current_path.lineTo(midpoint)
+        else:
+            self.current_path.quadTo(previous, midpoint)
         self.current_item.setPath(self.current_path)
         event.accept()
 
@@ -2039,17 +2115,18 @@ class SmoothCanvasView(QGraphicsView):
         if self.current_item and self.current_path:
             if self.current_mode in ("LINE", "SHAPE", "RULER", "COMPASS"):
                 self.update_geometric_shape(self.points[0], release_pos)
-            elif self.shape_has_snapped:
-                self.update_snapped_preview(release_pos)
             elif self.points:
-                if (release_pos - self.points[-1]).manhattanLength() >= 1.0:
+                release_added = (release_pos - self.points[-1]).manhattanLength() >= 1.0
+                if release_added:
                     self.points.append(release_pos)
-                self.snap_freehand_to_shape()
-                if self.shape_has_snapped:
-                    self.update_snapped_preview(release_pos)
-                else:
+                if len(self.points) == 1:
                     self.current_path.lineTo(release_pos)
-                    self.current_item.setPath(self.current_path)
+                elif len(self.points) == 2:
+                    self.current_path.lineTo(self.points[-1])
+                else:
+                    control = self.points[-2] if release_added else self.points[-1]
+                    self.current_path.quadTo(control, release_pos)
+                self.current_item.setPath(self.current_path)
 
             # Ignore an accidental zero-length click.
             if not self.current_path.isEmpty() and self.current_path.length() > 0.5:
@@ -2060,7 +2137,6 @@ class SmoothCanvasView(QGraphicsView):
         self.current_item = None
         self.current_path = None
         self.points.clear()
-        self.shape_has_snapped = False
         self.stroke_completed.emit()
         event.accept()
 
@@ -2110,7 +2186,15 @@ class SmoothCanvasView(QGraphicsView):
                 event.accept()
                 return
         if event_type == QEvent.Type.TabletPress and event.button() == Qt.MouseButton.LeftButton:
-            self.mousePressEvent(event)
+            mouse_event = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                event.position(),
+                event.globalPosition(),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                event.modifiers(),
+            )
+            self.mousePressEvent(mouse_event)
             if self.is_drawing and self.current_mode in {"PEN", "HIGHLIGHTER", "LASER"}:
                 scene = self.current_page_scene()
                 if scene is not None:
@@ -2133,11 +2217,16 @@ class SmoothCanvasView(QGraphicsView):
                 self.mapToScene(event.position().toPoint()), self.make_pen().widthF() / 2.0 + 1.0
             )
             pressure = max(0.08, min(1.0, float(event.pressure())))
+            # Tablet pressure sensors can jitter from frame to frame. Smooth
+            # pressure and use wider width buckets so one stroke does not
+            # fragment into dozens of tiny graphics items.
+            pressure = pressure * 0.35 + getattr(self, "_tablet_smoothed_pressure", pressure) * 0.65
+            self._tablet_smoothed_pressure = pressure
             base_width = self.highlighter_width if self.current_mode == "HIGHLIGHTER" else max(2.5, self.pen_width) if self.current_mode == "LASER" else self.pen_width
-            width = round(max(0.6, base_width * (0.22 + pressure * 0.78)) * 2.0) / 2.0
+            width = float(max(1, round(max(0.6, base_width * (0.22 + pressure * 0.78)))))
             if scene is not None and (point - self._tablet_last_point).manhattanLength() >= 0.8:
                 segment = self._tablet_segment_item
-                if segment is None or abs(width - self._tablet_last_width) >= 0.5:
+                if segment is None or abs(width - self._tablet_last_width) >= 1.5:
                     segment_path = QPainterPath()
                     segment_path.moveTo(self._tablet_last_point)
                     segment = QGraphicsPathItem()
@@ -2174,6 +2263,7 @@ class SmoothCanvasView(QGraphicsView):
                 self.stroke_completed.emit()
             self._tablet_items = []
             self._tablet_segment_item = None
+            self._tablet_smoothed_pressure = 0.0
             self.points.clear()
             self.current_path = None
             self.current_item = None
@@ -2235,38 +2325,6 @@ class SmoothCanvasView(QGraphicsView):
             if item is not scene.bg_item and item not in self.erased_in_drag:
                 scene.removeItem(item)
                 self.erased_in_drag.append(item)
-
-    def snap_freehand_to_shape(self) -> None:
-        if len(self.points) < 10 or not self.current_item:
-            return
-        if self.current_mode not in ("PEN", "HIGHLIGHTER", "LASER"):
-            return
-
-        start, end = self.points[0], self.points[-1]
-        direct_distance = math.hypot(end.x() - start.x(), end.y() - start.y())
-        path_length = sum(
-            math.hypot(
-                self.points[index].x() - self.points[index - 1].x(),
-                self.points[index].y() - self.points[index - 1].y(),
-            )
-            for index in range(1, len(self.points))
-        )
-        if path_length <= 0:
-            return
-
-        if direct_distance / path_length > 0.82:
-            self.shape_has_snapped = True
-            path = QPainterPath(start)
-            path.lineTo(end)
-            self.current_path = path
-            self.current_item.setPath(path)
-
-    def update_snapped_preview(self, current_pos: QPointF) -> None:
-        if self.shape_has_snapped and self.current_item and self.points:
-            path = QPainterPath(self.points[0])
-            path.lineTo(current_pos)
-            self.current_path = path
-            self.current_item.setPath(path)
 
     def update_geometric_shape(self, start: QPointF, end: QPointF) -> None:
         if not self.current_item:
@@ -3216,6 +3274,7 @@ class NotebookWindow(QMainWindow):
         self.ocr_worker.recognized.connect(self.review_ocr_result)
         self.ocr_worker.failed.connect(self.on_ocr_error)
         self.ocr_worker.finished.connect(self.release_ocr_worker)
+        retain_background_worker(self.ocr_worker)
         self.ocr_worker.start()
 
     def review_ocr_result(self, recognized_text: str) -> None:
@@ -3430,6 +3489,7 @@ class NotebookWindow(QMainWindow):
         self.ai_worker.answer_ready.connect(self.on_ai_answer)
         self.ai_worker.request_failed.connect(self.on_ai_error)
         self.ai_worker.finished.connect(self.release_ai_worker)
+        retain_background_worker(self.ai_worker)
         self.ai_worker.start()
 
     def on_ai_answer(self, answer: str) -> None:
@@ -3522,6 +3582,7 @@ class NotebookWindow(QMainWindow):
         self.transcription_worker.transcript_ready.connect(self.on_transcription_ready)
         self.transcription_worker.request_failed.connect(self.on_transcription_error)
         self.transcription_worker.finished.connect(self.release_transcription_worker)
+        retain_background_worker(self.transcription_worker)
         self.transcription_worker.start()
 
     def on_transcription_ready(self, transcript: str) -> None:
@@ -4379,15 +4440,18 @@ class NotebookWindow(QMainWindow):
         worker = UpdateCheckWorker(APP_VERSION)
         self.update_check_worker = worker
         worker.update_available.connect(self.offer_update)
-        worker.up_to_date.connect(
-            lambda: self.statusBar().showMessage(f"RobustNotes v{APP_VERSION} is up to date.", 5000)
-        )
-        worker.request_failed.connect(
-            lambda message: self.statusBar().showMessage(message, 7000)
-        )
+        worker.up_to_date.connect(self.on_update_check_complete)
+        worker.request_failed.connect(self.on_update_check_failed)
         worker.finished.connect(lambda: setattr(self, "update_check_worker", None))
+        retain_background_worker(worker)
         self.statusBar().showMessage("Checking for RobustNotes updates…", 5000)
         worker.start()
+
+    def on_update_check_complete(self) -> None:
+        self.statusBar().showMessage(f"RobustNotes v{APP_VERSION} is up to date.", 5000)
+
+    def on_update_check_failed(self, message: str) -> None:
+        self.statusBar().showMessage(message, 7000)
 
     def offer_update(self, version: str, url: str, digest: str) -> None:
         if not getattr(sys, "frozen", False):
@@ -4410,12 +4474,14 @@ class NotebookWindow(QMainWindow):
         worker = UpdateDownloadWorker(version, url, digest)
         self.update_download_worker = worker
         worker.installer_ready.connect(self.install_downloaded_update)
-        worker.request_failed.connect(
-            lambda message: QMessageBox.warning(self, "Update failed", message)
-        )
+        worker.request_failed.connect(self.on_update_download_failed)
         worker.finished.connect(lambda: setattr(self, "update_download_worker", None))
+        retain_background_worker(worker)
         self.statusBar().showMessage(f"Downloading RobustNotes {version}…", 0)
         worker.start()
+
+    def on_update_download_failed(self, message: str) -> None:
+        QMessageBox.warning(self, "Update failed", message)
 
     def install_downloaded_update(self, installer_path: str) -> None:
         if not getattr(sys, "frozen", False) or sys.platform != "win32":
@@ -5254,6 +5320,7 @@ class WorkspaceWindow(QMainWindow):
         self.local_data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation))
         self.config_dir = self.local_data_dir / "Security"
         self.profiles_dir = self.config_dir / "profiles"
+        self.remembered_login_path = self.config_dir / "remembered_login.bin"
         old_config_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation)) / "RobustNotes"
         self.legacy_account_file = old_config_dir / "local_profile.json"
         self.account_file = self.legacy_account_file
@@ -5281,6 +5348,8 @@ class WorkspaceWindow(QMainWindow):
         self.setStyleSheet(WORKSPACE_STYLE)
         self.migrate_legacy_profile()
         self.show_auth()
+        if sys.platform == "win32":
+            QTimer.singleShot(0, self.try_remembered_login)
 
     @staticmethod
     def profile_key_for(name: str) -> str:
@@ -5389,6 +5458,10 @@ class WorkspaceWindow(QMainWindow):
         self.password_input.setPlaceholderText("Password")
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         form.addWidget(self.password_input)
+        self.remember_login_checkbox = QCheckBox("Keep me signed in on this Windows account")
+        self.remember_login_checkbox.setChecked(sys.platform == "win32")
+        self.remember_login_checkbox.setVisible(sys.platform == "win32")
+        form.addWidget(self.remember_login_checkbox)
         self.confirm_input = QLineEdit()
         self.confirm_input.setPlaceholderText("Confirm password")
         self.confirm_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -5401,7 +5474,11 @@ class WorkspaceWindow(QMainWindow):
         self.auth_button.setObjectName("PrimaryButton")
         self.auth_button.clicked.connect(self.submit_auth)
         form.addWidget(self.auth_button)
-        self.auth_hint = QLabel("Your password is protected on this device.")
+        self.auth_hint = QLabel(
+            "On Windows, you can stay signed in securely on this Windows account."
+            if sys.platform == "win32"
+            else "Your password is protected on this device."
+        )
         self.auth_hint.setObjectName("Muted")
         self.auth_hint.setWordWrap(True)
         form.addWidget(self.auth_hint)
@@ -5430,6 +5507,7 @@ class WorkspaceWindow(QMainWindow):
         )
         self.name_input.setPlaceholderText("Choose a username" if signup else "Username")
         self.confirm_input.setVisible(signup)
+        self.remember_login_checkbox.setVisible(sys.platform == "win32")
         self.auth_button.setText("Create local profile  →" if signup else "Sign in  →")
         self.auth_mode_button.setText(
             "Already have a profile?  Sign in" if signup
@@ -5471,6 +5549,7 @@ class WorkspaceWindow(QMainWindow):
                 return
             if not self.activate_profile(profile, account_file):
                 return
+            self.save_remembered_login(name, password)
             self.password_input.clear()
             self.confirm_input.clear()
             self.open_dashboard()
@@ -5496,8 +5575,46 @@ class WorkspaceWindow(QMainWindow):
             return
         if not self.activate_profile(profile, account_file):
             return
+        self.save_remembered_login(name, password)
         self.password_input.clear()
         self.open_dashboard()
+
+    def save_remembered_login(self, name: str, password: str) -> None:
+        """Remember credentials only as DPAPI ciphertext bound to this Windows user."""
+        if sys.platform != "win32":
+            return
+        if not self.remember_login_checkbox.isChecked():
+            self.remembered_login_path.unlink(missing_ok=True)
+            return
+        payload = json.dumps({"name": name, "password": password}, ensure_ascii=False).encode("utf-8")
+        try:
+            encrypted = protect_remembered_login(payload)
+            temporary = self.remembered_login_path.with_suffix(".tmp")
+            temporary.write_bytes(encrypted)
+            os.replace(temporary, self.remembered_login_path)
+        except (OSError, ValueError) as error:
+            self.remembered_login_path.unlink(missing_ok=True)
+            self.auth_hint.setText(f"Could not enable this-device sign-in: {error}")
+
+    def try_remembered_login(self) -> None:
+        if not self.remembered_login_path.is_file() or self.auth_mode != "login":
+            return
+        try:
+            payload = json.loads(unprotect_remembered_login(self.remembered_login_path.read_bytes()).decode("utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("name"), str) or not isinstance(payload.get("password"), str):
+                raise ValueError("Invalid saved sign-in data")
+            self.name_input.setText(payload["name"])
+            self.password_input.setText(payload["password"])
+            self.remember_login_checkbox.setChecked(True)
+            self.submit_auth()
+            if self.profile is None:
+                self.remembered_login_path.unlink(missing_ok=True)
+                self.password_input.clear()
+                self.auth_error.clear()
+                self.auth_hint.setText("Saved sign-in could not be used. Please sign in again.")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            self.remembered_login_path.unlink(missing_ok=True)
+            self.auth_hint.setText("Saved sign-in is unavailable. Please sign in again.")
 
     def activate_profile(self, profile: dict[str, str], account_file: Path) -> bool:
         profile_key = self.profile_key_for(profile["name"])
@@ -5902,6 +6019,7 @@ class WorkspaceWindow(QMainWindow):
                 error_label.setText(f"Could not save the new password: {error}")
                 return
             self.profile = updated
+            self.save_remembered_login(updated["name"], new_password.text())
             dialog.accept()
             QMessageBox.information(self, "Password changed", "Your local profile password has been updated.")
 

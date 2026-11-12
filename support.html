@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b111a">
+  <meta name="description" content="Get help with RobustNotes installation, notebooks, handwriting OCR, AI, music, and local data. Contact support@robustnotes.com.">
+  <meta property="og:title" content="RobustNotes Support">
+  <meta property="og:description" content="Guides and troubleshooting for your RobustNotes workspace.">
+  <title>Support | RobustNotes</title>
+  <link rel="icon" type="image/png" href="assets/robustnotes-icon.png">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b111a;
+      --panel: #111a25;
+      --panel-raised: #172332;
+      --line: rgba(164, 190, 215, .15);
+      --text: #f2f7fc;
+      --muted: #a3b1c1;
+      --cyan: #43d7e6;
+      --cyan-soft: #85f0ef;
+      --blue: #8eaeff;
+      --radius: 20px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(ellipse at 78% 0%, rgba(46,145,177,.17), transparent 36rem),
+        radial-gradient(ellipse at 8% 22%, rgba(75,93,160,.12), transparent 32rem),
+        var(--bg);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+    a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid var(--cyan-soft); outline-offset: 4px; }
+    .wrap { width: min(1080px, calc(100% - 44px)); margin-inline: auto; }
+    .topbar { border-bottom: 1px solid rgba(164,190,215,.09); background: rgba(11,17,26,.76); backdrop-filter: blur(18px); }
+    .nav { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .brand { display: inline-flex; align-items: center; text-decoration: none; }
+    .brand img { display: block; width: 184px; max-height: 48px; object-fit: contain; object-position: left center; }
+    .nav-links { display: flex; align-items: center; gap: 26px; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: .92rem; }
+    .nav-links a:hover { color: var(--text); }
+    .button { display: inline-flex; min-height: 46px; align-items: center; justify-content: center; gap: 9px; padding: 0 17px; border-radius: 12px; text-decoration: none; font-weight: 730; font-size: .92rem; transition: transform .18s ease, border-color .18s ease, background .18s ease; }
+    .button:hover { transform: translateY(-2px); }
+    .button-primary { color: #07151c; background: linear-gradient(135deg,var(--cyan-soft),var(--cyan)); box-shadow: 0 10px 30px rgba(67,215,230,.15); }
+    .button-secondary { color: var(--text); border: 1px solid var(--line); background: rgba(21,32,45,.78); }
+    main { padding: 68px 0 88px; }
+    .hero { max-width: 760px; margin-bottom: 38px; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 10px; color: var(--cyan-soft); text-transform: uppercase; letter-spacing: .16em; font-size: .73rem; font-weight: 780; }
+    .eyebrow::before { content: ""; width: 23px; height: 1px; background: var(--cyan); }
+    h1,h2,h3,p { margin-top: 0; }
+    h1 { margin: 16px 0 15px; font-size: clamp(2.8rem,6vw,4.7rem); line-height: 1; letter-spacing: -.07em; }
+    h1 span { color: var(--cyan); }
+    .hero p { max-width: 650px; margin-bottom: 24px; color: #b5c1cf; font-size: clamp(1rem,1.5vw,1.14rem); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 11px; }
+    .support-grid { display: grid; grid-template-columns: minmax(0,1.45fr) minmax(260px,.75fr); gap: 20px; align-items: start; }
+    .card { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg,rgba(22,34,48,.92),rgba(16,25,37,.95)); }
+    .faq-card { padding: clamp(20px,3.5vw,32px); }
+    .section-title { margin-bottom: 20px; }
+    .section-title h2 { margin: 9px 0 5px; font-size: 1.45rem; letter-spacing: -.035em; }
+    .section-title p { margin: 0; color: var(--muted); font-size: .92rem; }
+    .search { width: 100%; min-height: 48px; margin: 18px 0 17px; padding: 0 14px; color: var(--text); background: #0e1620; border: 1px solid var(--line); border-radius: 11px; font: inherit; }
+    .faq-list { display: grid; gap: 10px; }
+    details { border: 1px solid rgba(164,190,215,.12); border-radius: 13px; background: rgba(11,17,26,.43); }
+    summary { position: relative; padding: 15px 45px 15px 16px; cursor: pointer; list-style: none; font-weight: 670; line-height: 1.45; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; position: absolute; right: 17px; top: 12px; color: var(--cyan); font-size: 1.3rem; font-weight: 500; }
+    details[open] summary::after { content: "−"; }
+    .answer { padding: 0 16px 16px; color: var(--muted); font-size: .92rem; }
+    .answer p:last-child { margin-bottom: 0; }
+    .answer a { color: var(--cyan-soft); }
+    .side { display: grid; gap: 16px; }
+    .contact-card,.checklist-card { padding: 23px; }
+    .contact-card h2,.checklist-card h2 { margin: 10px 0 9px; font-size: 1.25rem; letter-spacing: -.03em; }
+    .contact-card p,.checklist-card p { color: var(--muted); font-size: .91rem; }
+    .contact-email { display: block; margin: 17px 0; color: var(--cyan-soft); font-weight: 730; overflow-wrap: anywhere; }
+    .response-note { margin: 15px 0 0; font-size: .8rem !important; }
+    .checklist { display: grid; gap: 12px; margin: 14px 0 0; padding: 0; list-style: none; }
+    .checklist li { position: relative; padding-left: 26px; color: #c1ccda; font-size: .87rem; }
+    .checklist li::before { content: "✓"; position: absolute; left: 0; color: var(--cyan); font-weight: 850; }
+    .empty { display: none; padding: 20px; color: var(--muted); text-align: center; }
+    .links { display: flex; flex-wrap: wrap; gap: 12px 19px; margin-top: 27px; color: var(--muted); font-size: .88rem; }
+    .links a { text-decoration-color: rgba(163,177,193,.4); text-underline-offset: 4px; }
+    footer { padding: 24px 0 31px; border-top: 1px solid rgba(164,190,215,.09); color: #8494a6; font-size: .83rem; }
+    .footer-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px; }
+    .footer-row nav { display: flex; flex-wrap: wrap; gap: 18px; }
+    .footer-row a { color: var(--muted); text-decoration: none; }
+    .footer-row a:hover { color: var(--cyan-soft); }
+    @media (max-width: 760px) {
+      .wrap { width: min(100% - 32px, 600px); }
+      .nav { min-height: 66px; }
+      .brand img { width: 158px; }
+      .nav-links { gap: 15px; }
+      .nav-links a:not(.nav-cta) { display: none; }
+      main { padding: 48px 0 62px; }
+      .support-grid { grid-template-columns: 1fr; }
+      .side { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 520px) {
+      .side { grid-template-columns: 1fr; }
+      .hero-actions .button { width: 100%; }
+      .footer-row { align-items: flex-start; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) { *,*::before,*::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap nav">
+      <a class="brand" href="index.html" aria-label="RobustNotes home">
+        <img src="assets/robustnotes-logo.svg" alt="RobustNotes">
+      </a>
+      <nav class="nav-links" aria-label="Main navigation">
+        <a href="index.html#features">Features</a>
+        <a href="index.html#download">Download</a>
+        <a href="privacy.html">Privacy</a>
+        <a class="button button-secondary nav-cta" href="mailto:support@robustnotes.com?subject=RobustNotes%20Support">Contact support</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="eyebrow">RobustNotes help center</div>
+      <h1 id="page-title">Let’s get you <span>unstuck.</span></h1>
+      <p>Find a quick answer or send the support team a clear report. RobustNotes keeps your notebooks on your device, so support cannot see your pages unless you choose to share details.</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="mailto:support.robustnotes@gmail.com.com?subject=RobustNotes%20Support">✉ Email support</a>
+        <a class="button button-secondary" href="https://github.com/specrthyahskod/RobustNotes/releases" target="_blank" rel="noopener noreferrer">View releases ↗</a>
+      </div>
+    </section>
+
+    <div class="support-grid">
+      <section class="card faq-card" aria-labelledby="faq-title">
+        <div class="section-title">
+          <div class="eyebrow">Quick answers</div>
+          <h2 id="faq-title">Frequently asked questions</h2>
+          <p>Search topics or open a question to see steps.</p>
+        </div>
+        <label class="visually-hidden" for="faq-search" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">Search support questions</label>
+        <input class="search" id="faq-search" type="search" placeholder="Search installation, OCR, AI, music…" autocomplete="off">
+        <div class="faq-list" id="faq-list">
+          <details data-keywords="install setup windows exe installer update">
+            <summary>How do I install RobustNotes on Windows?</summary>
+            <div class="answer"><p>Download the Windows setup file from the <a href="index.html#download">download page</a>, open it, and follow the installer prompts. If Windows shows a security prompt, confirm that you downloaded the installer from the official RobustNotes website or GitHub release page.</p><p>To update an existing installation, use the app’s update check or install the latest setup package. Your locally stored workspace is kept during a normal in-place update.</p></div>
+          </details>
+          <details data-keywords="login password profile remember credentials local windows">
+            <summary>Why do I need to sign in, and can I stay signed in?</summary>
+            <div class="answer"><p>Desktop profiles are local to this device. On Windows, select <strong>Keep me signed in on this Windows account</strong> on the sign-in screen to remember your sign-in securely for that Windows account. You can lock the workspace from the profile menu when you want to require sign-in again.</p></div>
+          </details>
+          <details data-keywords="where notes files data stored privacy backup local">
+            <summary>Where are my notes and profile data stored?</summary>
+            <div class="answer"><p>The desktop app stores profiles and workspace files locally on the computer. RobustNotes does not currently sync desktop notes to a RobustNotes cloud. Use the app’s backup/export tools to keep a separate copy. See the <a href="privacy.html">privacy page</a> for more detail.</p></div>
+          </details>
+          <details data-keywords="ocr handwriting recognition model download install">
+            <summary>Why isn’t handwriting OCR ready immediately?</summary>
+            <div class="answer"><p>Desktop handwriting recognition is optional. It requires the OCR packages and model files, which are not bundled with the standard Windows installer. Once installed, recognition runs locally. Review the recognized text before saving or replacing ink because handwriting can be misread.</p><p>If the OCR model fails to download or load, email support with the full error text and whether you’re using the standard or OCR-enabled setup.</p></div>
+          </details>
+          <details data-keywords="ai chatbot model local endpoint ollama configure privacy">
+            <summary>What does RobustNotes AI need?</summary>
+            <div class="answer"><p>The desktop AI sidebar needs a compatible model service configured in the app. It can use page text, OCR text, PDF text, and a page image as context. The question and selected context are sent to the endpoint you configure; check whether that endpoint is local or remote before sharing private notes. RobustNotes does not currently ship its own trained model.</p></div>
+          </details>
+          <details data-keywords="voice speech microphone transcription ai permission">
+            <summary>How do I use voice input?</summary>
+            <div class="answer"><p>Open the AI sidebar, allow microphone access if Windows asks, and use the voice control to capture a question. Speech transcription requires the optional local speech-recognition package and model. If the voice control is unavailable, check the microphone selected in Windows and whether the optional speech component is installed.</p></div>
+          </details>
+          <details data-keywords="music funkwhale stream server pod login search playback">
+            <summary>How does the music feature work?</summary>
+            <div class="answer"><p>The desktop music player can connect to a Funkwhale server that you configure, or play audio files added from your device. For streaming, enter a server address and the account details required by that server, connect, then search its available library. Availability and playback depend on that server and its library.</p></div>
+          </details>
+          <details data-keywords="android mobile preview features notes unsupported">
+            <summary>What works in the Android preview?</summary>
+            <div class="answer"><p>The experimental Android preview currently focuses on local text notes and basic search, creation, editing, and deletion. Desktop features such as the drawing canvas, PDF annotation, OCR, AI chat, and whiteboards are not all available on Android yet.</p></div>
+          </details>
+          <details data-keywords="crash close suddenly error logs bug report">
+            <summary>What should I send when the app crashes?</summary>
+            <div class="answer"><p>Include the app version, Windows version, whether you installed from the website or updated in-app, what you were doing just before the crash, and the complete error message or crash log if available. Please remove passwords and private note content from screenshots or logs.</p></div>
+          </details>
+        </div>
+        <p class="empty" id="no-results">No matching questions. Try a different search or email support.</p>
+        <div class="links">
+          <a href="index.html">RobustNotes home</a>
+          <a href="privacy.html">Privacy policy</a>
+          <a href="https://github.com/specrthyahskod/RobustNotes" target="_blank" rel="noopener noreferrer">Source code</a>
+          <a href="https://github.com/specrthyahskod/RobustNotes/releases" target="_blank" rel="noopener noreferrer">Release notes</a>
+        </div>
+      </section>
+
+      <aside class="side" aria-label="Contact support and reporting tips">
+        <section class="card contact-card">
+          <div class="eyebrow">Talk to a person</div>
+          <h2>We’re here to help.</h2>
+          <p>Email your question or describe what went wrong. A useful subject line helps keep your report easy to follow.</p>
+          <a class="contact-email" href="mailto:support@robustnotes.com?subject=RobustNotes%20Support">support@robustnotes.com</a>
+          <a class="button button-primary" href="mailto:support@robustnotes.com?subject=RobustNotes%20Support">Write an email →</a>
+          <p class="response-note">RobustNotes is an independent project, so replies may take some time.</p>
+        </section>
+        <section class="card checklist-card">
+          <div class="eyebrow">Help us troubleshoot</div>
+          <h2>What to include</h2>
+          <p>For a bug report, these details usually make it easier to reproduce the problem:</p>
+          <ul class="checklist">
+            <li>App version and Windows or Android version</li>
+            <li>Steps that lead to the issue</li>
+            <li>What you expected and what happened</li>
+            <li>Full error text or a screenshot with private details hidden</li>
+          </ul>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap footer-row">
+      <span>© <span id="year">2026</span> RobustNotes · Support</span>
+      <nav aria-label="Footer navigation">
+        <a href="index.html">Home</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="mailto:support@robustnotes.com">Email support</a>
+      </nav>
+    </div>
+  </footer>
+  <script>
+    const search = document.querySelector('#faq-search');
+    const questions = [...document.querySelectorAll('#faq-list details')];
+    const empty = document.querySelector('#no-results');
+    search.addEventListener('input', () => {
+      const query = search.value.trim().toLowerCase();
+      let visibleCount = 0;
+      for (const question of questions) {
+        const matches = !query || `${question.textContent} ${question.dataset.keywords || ''}`.toLowerCase().includes(query);
+        question.hidden = !matches;
+        if (!matches) question.open = false;
+        if (matches) visibleCount++;
+      }
+      empty.style.display = visibleCount ? 'none' : 'block';
+    });
+    document.querySelector('#year').textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>
