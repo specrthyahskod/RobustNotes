@@ -1,5 +1,5 @@
 #define AppName "RobustNotes"
-#define AppVersion "1.0.6"
+#define AppVersion "0.2.6"
 #define AppPublisher "RobustNotes"
 #define AppExeName "RobustNotes.exe"
 
