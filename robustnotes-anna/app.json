@@ -1,9 +1,9 @@
 {
   "name": "RobustNotes",
   "slug": "robustnotes-anna",
-  "version": "0.1.0",
-  "tagline": "A calm home for your ideas",
-  "description": "A focused notes workspace with fast search, autosave, reading insights, and portable backups. The Anna edition keeps its notes in Anna app storage, separate from the RobustNotes desktop app.",
+  "version": "0.2.0",
+  "tagline": "Notebooks, whiteboards, and text in one studio",
+  "description": "A responsive notes studio with notebook and whiteboard canvases, handwriting tools, pages, editable text boxes, image and PDF attachments, text/code files, workspace search, AI questions and OCR via Anna’s selected models, voice input, study cards, and encrypted backups. Notes belong to your Anna account and are separate from the RobustNotes desktop workspace.",
   "category": "productivity",
   "bundled_executas": {
     "notes-core": { "path": "executas/robustnotes-anna" }

@@ -7,6 +7,8 @@
   ],
   "tags": ["robustnotes-anna"],
   "ui": {
+    "browser_permissions": ["microphone"],
+    "form_factors": ["desktop", "mobile"],
     "bundle": {
       "format": "static-spa",
       "entry": "index.html",
@@ -17,8 +19,8 @@
         "name": "main",
         "title": "RobustNotes",
         "default": true,
-        "default_size": { "w": 1080, "h": 720 },
-        "min_size": { "w": 640, "h": 480 }
+        "default_size": { "w": 1360, "h": 820 },
+        "min_size": { "w": 360, "h": 480 }
       }
     ],
     "csp_overrides": {},

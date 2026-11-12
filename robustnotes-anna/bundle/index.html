@@ -10,33 +10,47 @@
     <script src="./app.js" type="module"></script>
   </head>
   <body>
-    <div class="app-shell">
+    <div id="app" class="app-shell">
       <aside class="sidebar">
-        <a class="brand" href="#" aria-label="RobustNotes home">
-          <span class="brand-mark">R</span><span>Robust<span class="brand-light">Notes</span></span>
-        </a>
-        <div class="sidebar-heading"><span>YOUR NOTES</span><button id="new-note" class="icon-button" title="New note" aria-label="Create a note">+</button></div>
-        <label class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search notes" autocomplete="off" /></label>
-        <div id="note-list" class="note-list" aria-label="Notes"></div>
-        <div class="sidebar-bottom"><span class="save-dot"></span><span id="storage-label">Connecting to Anna…</span><button id="export" class="text-button">Export</button></div>
+        <a class="brand" href="#" aria-label="RobustNotes home"><img src="./robustnotes-logo.svg" alt="RobustNotes" /></a>
+        <div class="sidebar-heading"><span>WORKSPACE</span><button id="new-document" class="icon-button" title="Create a new item" aria-label="Create a new item">+</button></div>
+        <label class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search everything" autocomplete="off" /></label>
+        <nav id="type-filters" class="type-filters" aria-label="Filter workspace"><button data-filter="all" class="filter-button active">All work</button><button data-filter="notebook" class="filter-button">Notebooks</button><button data-filter="text" class="filter-button">Text &amp; code</button><button data-filter="whiteboard" class="filter-button">Whiteboards</button></nav>
+        <div class="list-caption">RECENT WORK</div>
+        <div id="document-list" class="note-list" aria-label="Workspace items"></div>
+        <div class="sidebar-bottom"><span class="save-dot"></span><span id="storage-label">Connecting…</span><button id="export-workspace" class="text-button">Backup</button></div>
       </aside>
       <main class="main-panel">
-        <header class="topbar"><span class="eyebrow">PERSONAL WORKSPACE</span><span id="save-state" class="save-state">Loading your notes…</span></header>
-        <section id="editor" class="editor">
-          <div class="editor-toolbar"><span class="document-chip">NOTE</span><div class="toolbar-actions"><button id="insights" class="text-button" disabled>Note insights</button><button id="delete-note" class="text-button danger" disabled>Delete note</button></div></div>
-          <input id="note-title" class="title-input" maxlength="120" placeholder="Untitled note" aria-label="Note title" />
-          <div class="editor-meta"><span id="updated-label">Start with an idea</span><span id="word-count">0 words · 0 min read</span></div>
-          <section id="insight-panel" class="insight-panel" hidden aria-live="polite"></section>
-          <textarea id="note-body" class="body-input" maxlength="12000" placeholder="Capture a thought, plan a project, or write something down…" aria-label="Note content"></textarea>
-          <footer class="editor-footer"><span>Autosaves as you write</span><span>⌘ / Ctrl + S to save</span></footer>
+        <header class="topbar"><div class="crumbs"><span class="eyebrow">ROBUSTNOTES STUDIO</span><span id="document-crumb" class="crumb-title"></span></div><div class="top-actions"><span id="save-state" class="save-state">Loading…</span><button id="rename-document" class="text-button" disabled>Rename</button><button id="favorite-document" class="small-icon" title="Add to favorites" aria-label="Add to favorites" disabled>☆</button><button id="open-ai" class="small-button" disabled>✦ Ask AI</button><button id="more-actions" class="small-icon" title="More actions" aria-label="More actions" disabled>•••</button></div></header>
+        <section id="dashboard" class="dashboard" hidden>
+          <div class="dashboard-intro"><p class="eyebrow">A CLEARER SPACE TO THINK</p><h1>Your ideas,<br />beautifully in order.</h1><p>Choose a canvas, a notebook page, or a text file to get started.</p></div>
+          <div class="create-grid">
+            <button class="create-card" data-create="notebook"><span class="create-icon">✎</span><strong>New notebook</strong><small>Handwriting, pages, PDF notes</small><span class="create-arrow">Create →</span></button>
+            <button class="create-card" data-create="text"><span class="create-icon">‹/›</span><strong>New text file</strong><small>Notes, Markdown, code</small><span class="create-arrow">Create →</span></button>
+            <button class="create-card" data-create="whiteboard"><span class="create-icon">◇</span><strong>New whiteboard</strong><small>Space for diagrams and ideas</small><span class="create-arrow">Create →</span></button>
+          </div>
+          <div class="dashboard-footer"><span>Saved to your Anna account · private to your account</span><span>Export a workspace backup any time</span></div>
         </section>
-        <section id="empty-state" class="empty-state" hidden>
-          <div class="empty-icon">✳</div><p class="eyebrow">A CLEARER SPACE TO THINK</p><h1>Your ideas, in good order.</h1>
-          <p>Create a note to get started. Your Anna version keeps its notes in Anna’s app storage, separate from the Windows desktop workspace.</p>
-          <button id="empty-new" class="primary-button">Create your first note <span>→</span></button>
+
+        <section id="document-view" class="document-view" hidden>
+          <div id="canvas-toolbar" class="canvas-toolbar" hidden>
+            <div class="tool-cluster"><button class="tool-button selected" data-tool="pen" title="Pen (P)">✎<span>Pen</span></button><button class="tool-button" data-tool="highlighter" title="Highlighter (H)">▰<span>Highlight</span></button><button class="tool-button" data-tool="eraser" title="Eraser (E)">◩<span>Eraser</span></button><button class="tool-button" data-tool="laser" title="Laser pointer (Z)">✧<span>Laser</span></button><button class="tool-button" data-tool="line" title="Line (I)">╱<span>Line</span></button><button class="tool-button" data-tool="shape" title="Shapes (S)">▱<span>Shapes</span></button><button class="tool-button" data-tool="lasso" title="Lasso (L)">⌁<span>Select</span></button><button class="tool-button" data-tool="text" title="Text box">T<span>Text</span></button><button class="tool-button" data-tool="scale" title="Scale / ruler">♧<span>Scale</span></button><button class="tool-button" data-tool="compass" title="Compass">◉<span>Compass</span></button></div>
+            <div class="tool-options"><select id="subtool" aria-label="Tool options"><option value="free">Freehand lasso</option><option value="rectangle">Rectangular lasso</option><option value="rectangle-shape">Rectangle shape</option><option value="ellipse">Ellipse shape</option><option value="triangle">Triangle shape</option><option value="dot-grid">Dot grid paper</option><option value="ruled">Ruled paper</option><option value="cornell">Cornell notes</option><option value="meeting">Meeting notes</option><option value="planner">Weekly planner</option></select><div class="swatches" aria-label="Ink colors"><button data-color="#172b3c" style="--swatch:#172b3c" title="Ink"></button><button data-color="#31c9dd" style="--swatch:#31c9dd" title="Cyan"></button><button data-color="#e45468" style="--swatch:#e45468" title="Red"></button><button data-color="#e9a641" style="--swatch:#e9a641" title="Amber"></button><button data-color="#8b72db" style="--swatch:#8b72db" title="Violet"></button><button data-color="#fffdf7" style="--swatch:#fffdf7" title="White"></button><input id="custom-color" type="color" value="#172b3c" title="Custom ink color" aria-label="Custom ink color" /></div><label class="size-control">Size <input id="ink-size" type="range" min="1" max="24" value="3" /><span id="size-label">3</span></label><div class="history-buttons"><button id="undo" title="Undo (Ctrl+Z)" disabled>↶</button><button id="redo" title="Redo (Ctrl+Y)" disabled>↷</button></div></div>
+        <div class="tool-actions"><label class="button-label">Insert image<input id="image-input" type="file" accept="image/*" hidden /></label><label class="button-label">Import PDF<input id="pdf-input" type="file" accept="application/pdf,.pdf" hidden /></label><button id="open-pdf" class="button-label" hidden>Open PDF</button><button id="ocr" class="button-label">Handwriting OCR</button><button id="study-cards" class="button-label">Study cards</button><button id="add-page" class="button-label primary-small">+ Page</button><button id="export-page" class="button-label">Export PNG</button><button id="print-notebook" class="button-label">Print / PDF</button><button id="canvas-zoom" class="button-label zoom-chip">84%</button></div>
+          </div>
+          <div id="text-toolbar" class="text-toolbar" hidden><button data-format="bold"><b>B</b></button><button data-format="italic"><i>I</i></button><button data-format="underline"><u>U</u></button><label>Text color <input id="text-color" type="color" value="#172b3c" /></label><select id="text-size"><option value="14">14 px</option><option value="18" selected>18 px</option><option value="24">24 px</option><option value="32">32 px</option></select><button id="analyze-text" class="button-label">Analyze text</button><span class="toolbar-spacer"></span><span class="text-hint">Rich text · autosaved</span></div>
+          <div class="workspace-content">
+            <aside id="page-rail" class="page-rail" hidden><div class="rail-heading"><span>PAGES</span><button id="duplicate-page" class="rail-add" title="Duplicate page">⧉</button></div><div id="page-list" class="page-list"></div><button id="clear-page" class="clear-page">Clear current page</button></aside>
+            <div id="canvas-viewport" class="canvas-viewport" hidden><div class="canvas-wrap"><canvas id="page-canvas" aria-label="Notebook page canvas"></canvas><div id="canvas-overlays" class="canvas-overlays"></div></div><div class="canvas-zoom-control"><button id="zoom-out" aria-label="Zoom out">−</button><input id="zoom-number" type="number" min="40" max="200" value="84" aria-label="Zoom percentage" /><span>%</span><input id="zoom-slider" type="range" min="40" max="140" value="84" aria-label="Zoom" /><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-fit">Fit</button></div></div>
+            <div id="text-editor-wrap" class="text-editor-wrap" hidden><div id="text-editor" class="text-editor" contenteditable="true" spellcheck="false" role="textbox" aria-multiline="true" data-placeholder="Start writing…"></div></div>
+          </div>
+          <footer class="statusbar"><span id="canvas-status">Ready · Draw or write anywhere on the page</span><span id="canvas-page-count"></span></footer>
         </section>
+        <section id="empty-state" class="empty-state" hidden><div class="empty-icon">✳</div><p class="eyebrow">A CLEARER SPACE TO THINK</p><h1>Your ideas, in good order.</h1><p>Create a notebook, text file, or whiteboard to get started.</p><button class="primary-button" data-create="notebook">Create a notebook <span>→</span></button></section>
+        <aside id="ai-panel" class="ai-panel" hidden><div class="ai-head"><div><span class="ai-spark">✦</span><strong>RobustNotes AI</strong><small id="ai-context">Page-aware help</small></div><button id="close-ai" class="small-icon" aria-label="Close AI panel">×</button></div><div id="ai-messages" class="ai-messages"><div class="ai-welcome">Ask about your page, get a study summary, or explore an idea. AI requests send the text or page image to Anna’s selected AI model.</div></div><div class="ai-input-row"><textarea id="ai-input" placeholder="Ask about this note…"></textarea><button id="voice-input" title="Voice to text (browser support required)">◉</button><button id="send-ai" class="primary-button">Ask ↑</button></div><div class="ai-foot">Review AI answers before relying on them.</div></aside>
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
       </main>
     </div>
+    <input id="import-workspace" type="file" accept="application/json,.json" hidden />
   </body>
 </html>
