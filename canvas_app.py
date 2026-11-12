@@ -2054,7 +2054,7 @@ class SmoothCanvasView(QGraphicsView):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
         if self.is_panning:
             self.is_panning = False
-            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
             event.accept()
             return
 
@@ -2424,7 +2424,7 @@ class SmoothCanvasView(QGraphicsView):
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             self.space_pressed = False
             self.is_panning = False
-            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
             event.accept()
             return
         super().keyReleaseEvent(event)
@@ -2675,7 +2675,7 @@ class NotebookWindow(QMainWindow):
         body_layout.addWidget(self.sidebar_widget)
 
         self.canvas = SmoothCanvasView()
-        self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+        self.canvas.setCursor(Qt.CursorShape.PointingHandCursor)
         # Avoid a delayed tooltip appearing under a stylus hovering over the page.
         # The same guidance is already available in the editor status bar.
         self.thumbnail_timer = QTimer(self)
