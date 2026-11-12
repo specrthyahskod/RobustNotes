@@ -32,7 +32,7 @@ from typing import Any, Optional, Sequence, TypedDict, cast
 from urllib.parse import urlencode, urlparse
 
 
-APP_VERSION = "0.2.7"
+APP_VERSION = "0.2.8"
 UPDATE_REPOSITORY = "specrthyahskod/RobustNotes"
 
 
@@ -4495,35 +4495,97 @@ class NotebookWindow(QMainWindow):
             return
         def ps_quote(value: str) -> str:
             return "'" + value.replace("'", "''") + "'"
-        script_path = Path(tempfile.gettempdir()) / f"robustnotes-update-{os.getpid()}.ps1"
+        temporary_dir = Path(tempfile.gettempdir())
+        process_id = os.getpid()
+        script_path = temporary_dir / f"robustnotes-update-{process_id}.ps1"
+        marker_path = temporary_dir / f"robustnotes-update-{process_id}.started"
+        log_path = temporary_dir / f"robustnotes-update-{process_id}.log"
         installer = str(Path(installer_path).resolve())
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        if not powershell.is_file():
+            QMessageBox.warning(self, "Update could not start", "Windows PowerShell could not be found.")
+            return
         script = (
             f"$ErrorActionPreference = 'Stop'\n"
-            f"Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue\n"
             f"$installer = {ps_quote(installer)}\n"
             f"$app = {ps_quote(str(app_path))}\n"
-            f"Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS' -Wait\n"
-            f"if (Test-Path -LiteralPath $app) {{ Start-Process -FilePath $app }}\n"
-            f"Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue\n"
-            f"Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\n"
+            f"$marker = {ps_quote(str(marker_path))}\n"
+            f"$log = {ps_quote(str(log_path))}\n"
+            "try {\n"
+            "    [System.IO.File]::WriteAllText($marker, 'ready')\n"
+            f"    Wait-Process -Id {process_id} -ErrorAction SilentlyContinue\n"
+            "    $result = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS' -Wait -PassThru\n"
+            "    if ($result.ExitCode -ne 0) { throw \"Installer exited with code $($result.ExitCode)\" }\n"
+            "    Start-Process -FilePath $app\n"
+            "    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue\n"
+            "} catch {\n"
+            "    Add-Content -LiteralPath $log -Value \"$(Get-Date -Format o): $($_.Exception.Message)\"\n"
+            "    if (Test-Path -LiteralPath $app) { Start-Process -FilePath $app }\n"
+            "} finally {\n"
+            "    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue\n"
+            "    Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\n"
+            "}\n"
         )
         try:
+            marker_path.unlink(missing_ok=True)
             script_path.write_text(script, encoding="utf-8")
-            subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+            child_environment = os.environ.copy()
+            for variable in (
+                "PYTHONHOME", "PYTHONPATH", "_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE",
+                "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "QT_QPA_FONTDIR",
+                "QML2_IMPORT_PATH", "QML_IMPORT_PATH",
+            ):
+                child_environment.pop(variable, None)
+            system32 = system_root / "System32"
+            child_environment["PATH"] = os.pathsep.join((
+                str(system32), str(system32 / "Wbem"), str(powershell.parent), str(system_root),
+            ))
+            helper_process = subprocess.Popen(
+                [str(powershell), "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=child_environment,
+                cwd=str(app_path.parent),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except OSError as error:
             QMessageBox.warning(self, "Update could not start", f"Could not launch the installer helper.\n\n{error}")
             return
-        self.statusBar().showMessage("Installing the update. RobustNotes will restart shortly…", 5000)
-        workspace = self.window()
-        if isinstance(workspace, WorkspaceWindow):
-            workspace._allow_exit_without_confirmation = True
-        QTimer.singleShot(250, QApplication.closeAllWindows)
+        self.statusBar().showMessage("Starting the update helper…", 5000)
+        startup_deadline = time.monotonic() + 8.0
+
+        def hand_off_to_update_helper() -> None:
+            if marker_path.is_file():
+                application = QApplication.instance()
+                if application is not None:
+                    application.setProperty("robustnotes_update_in_progress", True)
+                workspace = self.window()
+                if isinstance(workspace, WorkspaceWindow):
+                    workspace._allow_exit_without_confirmation = True
+                self.statusBar().showMessage("Installing the update. RobustNotes will restart shortly…", 5000)
+                QTimer.singleShot(250, QApplication.closeAllWindows)
+                return
+            if helper_process.poll() is not None:
+                QMessageBox.warning(
+                    self,
+                    "Update could not start",
+                    "The Windows update helper exited before it could begin. RobustNotes is still open. "
+                    f"Diagnostic log: {log_path}",
+                )
+                return
+            if time.monotonic() >= startup_deadline:
+                QMessageBox.warning(
+                    self,
+                    "Update could not start",
+                    "Windows did not confirm that the update helper started. RobustNotes is still open. "
+                    f"Diagnostic log: {log_path}",
+                )
+                return
+            QTimer.singleShot(150, hand_off_to_update_helper)
+
+        QTimer.singleShot(150, hand_off_to_update_helper)
 
     def open_music_player(self) -> None:
         if self.music_dialog is None:
@@ -6570,7 +6632,12 @@ class WorkspaceWindow(QMainWindow):
             elif isinstance(window, TextFileWindow):
                 window.save_timer.stop()
                 window.save_file()
-        if open_documents and not self._allow_exit_without_confirmation:
+        application = QApplication.instance()
+        update_shutdown = bool(
+            application is not None
+            and application.property("robustnotes_update_in_progress")
+        )
+        if open_documents and not self._allow_exit_without_confirmation and not update_shutdown:
             answer = QMessageBox.question(
                 self,
                 "Close RobustNotes?",
