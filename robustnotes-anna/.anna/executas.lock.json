@@ -1,0 +1,11 @@
+{
+  "$schema": "anna-executas-lock/v1",
+  "host": "https://anna.partners",
+  "executas": {
+    "notes-core": {
+      "tool_id": "tool-lunarlord74-robustnotes-notes-core-zz6t2pc4",
+      "path": "executas/robustnotes-anna",
+      "source": "cut"
+    }
+  }
+}

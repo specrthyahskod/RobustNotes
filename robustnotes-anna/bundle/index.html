@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b111a" />
+    <title>RobustNotes</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./anna-tool-ids.js"></script>
+    <script src="./app.js" type="module"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#" aria-label="RobustNotes home">
+          <span class="brand-mark">R</span><span>Robust<span class="brand-light">Notes</span></span>
+        </a>
+        <div class="sidebar-heading"><span>YOUR NOTES</span><button id="new-note" class="icon-button" title="New note" aria-label="Create a note">+</button></div>
+        <label class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search notes" autocomplete="off" /></label>
+        <div id="note-list" class="note-list" aria-label="Notes"></div>
+        <div class="sidebar-bottom"><span class="save-dot"></span><span id="storage-label">Connecting to Anna…</span><button id="export" class="text-button">Export</button></div>
+      </aside>
+      <main class="main-panel">
+        <header class="topbar"><span class="eyebrow">PERSONAL WORKSPACE</span><span id="save-state" class="save-state">Loading your notes…</span></header>
+        <section id="editor" class="editor">
+          <div class="editor-toolbar"><span class="document-chip">NOTE</span><div class="toolbar-actions"><button id="insights" class="text-button" disabled>Note insights</button><button id="delete-note" class="text-button danger" disabled>Delete note</button></div></div>
+          <input id="note-title" class="title-input" maxlength="120" placeholder="Untitled note" aria-label="Note title" />
+          <div class="editor-meta"><span id="updated-label">Start with an idea</span><span id="word-count">0 words · 0 min read</span></div>
+          <section id="insight-panel" class="insight-panel" hidden aria-live="polite"></section>
+          <textarea id="note-body" class="body-input" maxlength="12000" placeholder="Capture a thought, plan a project, or write something down…" aria-label="Note content"></textarea>
+          <footer class="editor-footer"><span>Autosaves as you write</span><span>⌘ / Ctrl + S to save</span></footer>
+        </section>
+        <section id="empty-state" class="empty-state" hidden>
+          <div class="empty-icon">✳</div><p class="eyebrow">A CLEARER SPACE TO THINK</p><h1>Your ideas, in good order.</h1>
+          <p>Create a note to get started. Your Anna version keeps its notes in Anna’s app storage, separate from the Windows desktop workspace.</p>
+          <button id="empty-new" class="primary-button">Create your first note <span>→</span></button>
+        </section>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </main>
+    </div>
+  </body>
+</html>

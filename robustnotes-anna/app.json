@@ -1,0 +1,11 @@
+{
+  "name": "RobustNotes",
+  "slug": "robustnotes-anna",
+  "version": "0.1.0",
+  "tagline": "A calm home for your ideas",
+  "description": "A focused notes workspace with fast search, autosave, reading insights, and portable backups. The Anna edition keeps its notes in Anna app storage, separate from the RobustNotes desktop app.",
+  "category": "productivity",
+  "bundled_executas": {
+    "notes-core": { "path": "executas/robustnotes-anna" }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schema": 4,
+  "required_executas": [
+    {
+      "tool_id": "bundled:notes-core"
+    }
+  ],
+  "tags": ["robustnotes-anna"],
+  "ui": {
+    "bundle": {
+      "format": "static-spa",
+      "entry": "index.html",
+      "external_origins": []
+    },
+    "views": [
+      {
+        "name": "main",
+        "title": "RobustNotes",
+        "default": true,
+        "default_size": { "w": 1080, "h": 720 },
+        "min_size": { "w": 640, "h": 480 }
+      }
+    ],
+    "csp_overrides": {},
+    "state_merge": "last_writer_wins"
+  },
+  "dev": {
+    "fixtures": ["fixtures/*.jsonl"],
+    "seed_storage": {},
+    "user_id": 1
+  }
+}

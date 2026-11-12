@@ -1,0 +1,10 @@
+{
+  "slug": "robustnotes-notes-core",
+  "name": "RobustNotes Note Insights",
+  "version": "0.1.0",
+  "executa_type": "tool",
+  "description": "Local deterministic word count, reading time, and heading extraction for RobustNotes.",
+  "tool_id": "tool-dev-robustnotes-anna",
+  "type": "python",
+  "manifest_file": "manifest.json"
+}
