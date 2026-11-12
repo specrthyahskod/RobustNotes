@@ -2595,8 +2595,9 @@ class NotebookWindow(QMainWindow):
         on_saved=None,
         settings_path: Optional[Path] = None,
         template_name: str = "Dot grid",
+        parent: Optional[QWidget] = None,
     ):
-        super().__init__()
+        super().__init__(parent)
         self.setWindowIcon(robustnotes_icon())
         self.document_path = Path(document_path) if document_path else None
         self.document_type = document_type
@@ -2675,7 +2676,8 @@ class NotebookWindow(QMainWindow):
 
         self.canvas = SmoothCanvasView()
         self.canvas.setCursor(Qt.CursorShape.CrossCursor)
-        self.canvas.setToolTip("Write, draw, and place content inside the page. Use Space + drag to pan the canvas.")
+        # Avoid a delayed tooltip appearing under a stylus hovering over the page.
+        # The same guidance is already available in the editor status bar.
         self.thumbnail_timer = QTimer(self)
         self.thumbnail_timer.setSingleShot(True)
         self.thumbnail_timer.setInterval(600)
@@ -4518,6 +4520,9 @@ class NotebookWindow(QMainWindow):
             QMessageBox.warning(self, "Update could not start", f"Could not launch the installer helper.\n\n{error}")
             return
         self.statusBar().showMessage("Installing the update. RobustNotes will restart shortly…", 5000)
+        workspace = self.window()
+        if isinstance(workspace, WorkspaceWindow):
+            workspace._allow_exit_without_confirmation = True
         QTimer.singleShot(250, QApplication.closeAllWindows)
 
     def open_music_player(self) -> None:
@@ -5263,8 +5268,8 @@ QScrollBar::handle:vertical { background:#3b4a5a; border-radius:4px; min-height:
 class TextFileWindow(QMainWindow):
     """Small local editor for plain text, Markdown, and code files."""
 
-    def __init__(self, path: Path, on_saved=None):
-        super().__init__()
+    def __init__(self, path: Path, on_saved=None, parent: Optional[QWidget] = None):
+        super().__init__(parent)
         self.setWindowIcon(robustnotes_icon())
         self.path = Path(path)
         self.on_saved = on_saved
@@ -5335,6 +5340,7 @@ class WorkspaceWindow(QMainWindow):
         self.profile: Optional[dict[str, str]] = None
         self.profile_key = ""
         self.legacy_profile_key = ""
+        self._allow_exit_without_confirmation = False
         self.open_windows: list[QMainWindow] = []
         self.setWindowTitle("RobustNotes — Workspace")
         self.resize(1240, 820)
@@ -5343,13 +5349,59 @@ class WorkspaceWindow(QMainWindow):
         self.setCentralWidget(self.stack)
         self.auth_page = self.build_auth_page()
         self.dashboard_page = self.build_dashboard()
+        self.document_page = self.build_document_page()
         self.stack.addWidget(self.auth_page)
         self.stack.addWidget(self.dashboard_page)
+        self.stack.addWidget(self.document_page)
         self.setStyleSheet(WORKSPACE_STYLE)
         self.migrate_legacy_profile()
         self.show_auth()
         if sys.platform == "win32":
             QTimer.singleShot(0, self.try_remembered_login)
+
+    def build_document_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("DocumentWorkspace")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QWidget()
+        header.setObjectName("DocumentWorkspaceHeader")
+        header.setStyleSheet("background:#151d27; border-bottom:1px solid #2b3948;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 10, 18, 10)
+        back = QPushButton("←  Workspace")
+        back.setObjectName("QuietButton")
+        back.setCursor(Qt.CursorShape.PointingHandCursor)
+        back.setToolTip("Save and return to your workspace")
+        back.clicked.connect(self.return_to_dashboard)
+        self.document_header_title = QLabel("Document")
+        self.document_header_title.setObjectName("Brand")
+        header_layout.addWidget(back)
+        header_layout.addSpacing(12)
+        header_layout.addWidget(self.document_header_title)
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        self.document_stack = QStackedWidget()
+        self.document_stack.setObjectName("DocumentStack")
+        layout.addWidget(self.document_stack, 1)
+        return page
+
+    def return_to_dashboard(self) -> None:
+        current = self.document_stack.currentWidget()
+        if isinstance(current, NotebookWindow):
+            current.save_document()
+        elif isinstance(current, TextFileWindow):
+            current.save_file()
+        self.stack.setCurrentWidget(self.dashboard_page)
+        self.refresh_documents()
+
+    def show_document(self, window: QMainWindow, title: str) -> None:
+        self.document_header_title.setText(title)
+        self.document_stack.setCurrentWidget(window)
+        self.stack.setCurrentWidget(self.document_page)
 
     @staticmethod
     def profile_key_for(name: str) -> str:
@@ -5666,6 +5718,8 @@ class WorkspaceWindow(QMainWindow):
                 if music is not None:
                     music.end_session()
             window.close()
+            if hasattr(self, "document_stack"):
+                self.document_stack.removeWidget(window)
         self.open_windows.clear()
         self.profile = None
         self.profile_key = ""
@@ -6390,12 +6444,20 @@ class WorkspaceWindow(QMainWindow):
             self.open_notebook(self.unique_path(title, ".rboard"), "whiteboard")
 
     def open_notebook(self, path: Path, document_type: str, template_name: str = "Dot grid"):
+        for existing in self.open_windows:
+            if isinstance(existing, NotebookWindow) and existing.document_path == path:
+                self.show_document(existing, existing.document_title)
+                return
         window = NotebookWindow(
-            path, document_type, self.refresh_documents, self.workspace_dir / "settings.ini", template_name
+            path, document_type, self.refresh_documents, self.workspace_dir / "settings.ini", template_name,
+            parent=self.document_stack,
         )
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.document_stack.addWidget(window)
         self.open_windows.append(window)
         window.destroyed.connect(lambda: self.release_window(window))
         window.show()
+        self.show_document(window, window.document_title)
         self.refresh_documents()
 
     def create_text_file(self):
@@ -6414,10 +6476,17 @@ class WorkspaceWindow(QMainWindow):
         except OSError as error:
             QMessageBox.warning(self, "Could not create file", f"The text file could not be opened.\n\n{error}")
             return
-        window = TextFileWindow(path, self.refresh_documents)
+        for existing in self.open_windows:
+            if isinstance(existing, TextFileWindow) and existing.path == path:
+                self.show_document(existing, existing.path.name)
+                return
+        window = TextFileWindow(path, self.refresh_documents, parent=self.document_stack)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.document_stack.addWidget(window)
         self.open_windows.append(window)
         window.destroyed.connect(lambda: self.release_window(window))
         window.show()
+        self.show_document(window, window.path.name)
         self.refresh_documents()
 
     def release_window(self, window):
@@ -6488,6 +6557,31 @@ class WorkspaceWindow(QMainWindow):
             self.open_notebook(path, "whiteboard" if path.suffix.lower() == ".rboard" else "notebook")
         else:
             self.open_text_file(path)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # The editors live inside this window now, so flush their pending work
+        # before the parent closes and Qt tears down the embedded widgets.
+        open_documents = list(self.open_windows)
+        for window in open_documents:
+            if isinstance(window, NotebookWindow):
+                if window.music_dialog is not None:
+                    window.music_dialog.end_session()
+                window.save_document()
+            elif isinstance(window, TextFileWindow):
+                window.save_timer.stop()
+                window.save_file()
+        if open_documents and not self._allow_exit_without_confirmation:
+            answer = QMessageBox.question(
+                self,
+                "Close RobustNotes?",
+                "You still have documents open. Their latest changes have been saved. Close the workspace?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
