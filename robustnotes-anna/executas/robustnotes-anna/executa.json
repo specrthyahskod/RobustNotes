@@ -1,10 +1,45 @@
 {
   "slug": "robustnotes-notes-core",
   "name": "RobustNotes Note Insights",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "executa_type": "tool",
   "description": "Local deterministic word count, reading time, and heading extraction for RobustNotes.",
   "tool_id": "tool-dev-robustnotes-anna",
   "type": "python",
-  "manifest_file": "manifest.json"
+  "manifest_file": "manifest.json",
+  "distribution": {
+    "active": "binary",
+    "profiles": {
+      "local": {
+        "type": "local",
+        "supports_protocol": true
+      },
+      "binary": {
+        "type": "binary",
+        "supports_protocol": true,
+        "binary_artifacts": {
+          "darwin-arm64": {
+            "path": "dist/robustnotes-notes-core-0.1.1-darwin-arm64.tar.gz",
+            "entrypoint": "robustnotes-notes-core",
+            "format": "tar.gz"
+          },
+          "darwin-x86_64": {
+            "path": "dist/robustnotes-notes-core-0.1.1-darwin-x86_64.tar.gz",
+            "entrypoint": "robustnotes-notes-core",
+            "format": "tar.gz"
+          },
+          "linux-x86_64": {
+            "path": "dist/robustnotes-notes-core-0.1.1-linux-x86_64.tar.gz",
+            "entrypoint": "robustnotes-notes-core",
+            "format": "tar.gz"
+          },
+          "windows-x86_64": {
+            "path": "dist/robustnotes-notes-core-0.1.1-windows-x86_64.zip",
+            "entrypoint": "robustnotes-notes-core.exe",
+            "format": "zip"
+          }
+        }
+      }
+    }
+  }
 }

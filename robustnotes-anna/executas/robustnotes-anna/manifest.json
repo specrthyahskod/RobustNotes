@@ -1,18 +1,24 @@
 {
   "name": "tool-dev-robustnotes-anna",
-  "version": "0.1.0",
+  "display_name": "RobustNotes Note Insights",
+  "version": "0.1.1",
+  "description": "Analyze a note locally for word count, estimated reading time, and Markdown headings.",
   "tools": [
     {
       "name": "analyze_note",
       "description": "Return word count, approximate reading time, and Markdown headings for a note.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "text": { "type": "string", "maxLength": 12000 }
-        },
-        "required": ["text"],
-        "additionalProperties": false
-      }
+      "parameters": [
+        {
+          "name": "text",
+          "type": "string",
+          "description": "The note text to analyze, up to 12,000 characters.",
+          "required": true
+        }
+      ],
+      "timeout": 10
     }
-  ]
+  ],
+  "credentials": [],
+  "host_capabilities": [],
+  "runtime": { "type": "binary" }
 }

@@ -2,7 +2,9 @@
   "schema": 4,
   "required_executas": [
     {
-      "tool_id": "bundled:notes-core"
+      "tool_id": "bundled:notes-core",
+      "min_version": "0.1.1",
+      "version": "latest"
     }
   ],
   "tags": ["robustnotes-anna"],

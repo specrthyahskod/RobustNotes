@@ -1,9 +1,15 @@
 {
   "name": "RobustNotes",
   "slug": "robustnotes-anna",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "tagline": "Notebooks, whiteboards, and text in one studio",
-  "description": "A responsive notes studio with notebook and whiteboard canvases, handwriting tools, pages, editable text boxes, image and PDF attachments, text/code files, workspace search, AI questions and OCR via Anna’s selected models, voice input, study cards, and encrypted backups. Notes belong to your Anna account and are separate from the RobustNotes desktop workspace.",
+  "description": "RobustNotes brings handwritten notes, visual planning, and focused writing together in one workspace. Create notebooks with ruled, dot-grid, Cornell, meeting, and planner pages; draw with a stylus, annotate with shapes and a lasso, add text boxes and images, and keep work organized with search, tags, favorites, and page tools. Make whiteboards for diagrams and brainstorming, or write in rich-text and code files with formatting and reading insights.\n\nAsk RobustNotes AI about the current page or your notes, turn handwriting into editable text with OCR, and draft study cards using Anna’s selected model. Voice input is available in supported browsers. Notes are saved to private Anna app storage; export or password-encrypt a workspace backup whenever you need one.\n\nRobustNotes is designed for both desktop and mobile layouts. PDF files can be attached for reference, while browser printing exports notebook pages to PDF. AI and OCR send the selected text or page image to Anna’s chosen model only when you start a request.",
+  "screenshots": [
+    "listing/robustnotes-anna-notebook.png",
+    "listing/robustnotes-anna-whiteboard.png",
+    "listing/robustnotes-anna-text.png",
+    "listing/robustnotes-anna-ai.png"
+  ],
   "category": "productivity",
   "bundled_executas": {
     "notes-core": { "path": "executas/robustnotes-anna" }

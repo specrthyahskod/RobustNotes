@@ -1,0 +1,101 @@
+name: Build RobustNotes Anna Executa binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      executa_version:
+        description: Executa version to build
+        required: true
+        default: 0.1.1
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x86_64
+            runner: macos-15-intel
+          - target: linux-x86_64
+            runner: ubuntu-22.04
+          - target: windows-x86_64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: robustnotes-anna/executas/robustnotes-anna
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build standalone Executa
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          EXECUTA_VERSION: ${{ inputs.executa_version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller==6.22.2
+          python -m PyInstaller --noconfirm --clean --onefile \
+            --name robustnotes-notes-core robustnotes_anna_plugin.py
+          python check_binary.py dist/robustnotes-notes-core
+          mkdir -p package
+          cp dist/robustnotes-notes-core package/robustnotes-notes-core
+          chmod +x package/robustnotes-notes-core
+          archive="robustnotes-notes-core-${EXECUTA_VERSION}-${TARGET}.tar.gz"
+          tar -czf "$archive" -C package robustnotes-notes-core
+          shasum -a 256 "$archive" > "${archive}.sha256"
+      - name: Build Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXECUTA_VERSION: ${{ inputs.executa_version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller==6.22.2
+          python -m PyInstaller --noconfirm --clean --onefile --name robustnotes-notes-core robustnotes_anna_plugin.py
+          python check_binary.py dist/robustnotes-notes-core.exe
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item dist/robustnotes-notes-core.exe package/robustnotes-notes-core.exe
+          $archive = "robustnotes-notes-core-$env:EXECUTA_VERSION-$env:TARGET.zip"
+          Compress-Archive -Path package/robustnotes-notes-core.exe -DestinationPath $archive -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -NoNewline "$archive.sha256"
+      - name: Upload built package
+        uses: actions/upload-artifact@v4
+        with:
+          name: executa-${{ matrix.target }}
+          path: |
+            robustnotes-anna/executas/robustnotes-anna/robustnotes-notes-core-${{ inputs.executa_version }}-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  release:
+    name: Publish build artifacts to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: executa-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create release and attach the four packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTA_VERSION: ${{ inputs.executa_version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh release create "robustnotes-notes-core-v${EXECUTA_VERSION}" release-assets/* \
+            --repo "$REPOSITORY" \
+            --title "RobustNotes Anna Executa ${EXECUTA_VERSION}" \
+            --notes "Standalone RobustNotes note-analysis Executa binaries for Anna. Includes macOS ARM64, macOS x64, Linux x64, and Windows x64 packages with SHA-256 checksums."

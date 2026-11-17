@@ -9,19 +9,27 @@ MAX_TEXT_LENGTH = 12_000
 
 MANIFEST = {
     "name": TOOL_NAME,
-    "version": "0.1.0",
+    "display_name": "RobustNotes Note Insights",
+    "version": "0.1.1",
+    "description": "Analyze a note locally for word count, estimated reading time, and Markdown headings.",
     "tools": [
         {
             "name": "analyze_note",
             "description": "Return word count, approximate reading time, and Markdown headings for a note.",
-            "parameters": {
-                "type": "object",
-                "properties": {"text": {"type": "string", "maxLength": MAX_TEXT_LENGTH}},
-                "required": ["text"],
-                "additionalProperties": False,
-            },
+            "parameters": [
+                {
+                    "name": "text",
+                    "type": "string",
+                    "description": f"The note text to analyze, up to {MAX_TEXT_LENGTH:,} characters.",
+                    "required": True,
+                }
+            ],
+            "timeout": 10,
         }
     ],
+    "credentials": [],
+    "host_capabilities": [],
+    "runtime": {"type": "binary"},
 }
 
 
@@ -53,6 +61,8 @@ def main() -> None:
             continue
         request = json.loads(line)
         try:
+            if not isinstance(request, dict):
+                raise ValueError("request must be a JSON object")
             method = request.get("method")
             if method == "describe":
                 result = MANIFEST
@@ -60,6 +70,8 @@ def main() -> None:
                 result = {"status": "ready"}
             elif method == "invoke":
                 params = request.get("params", {})
+                if not isinstance(params, dict):
+                    raise ValueError("params must be an object")
                 result = invoke(params.get("tool", ""), params.get("arguments", {}))
             else:
                 raise ValueError(f"unknown rpc: {method}")

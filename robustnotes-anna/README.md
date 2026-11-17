@@ -40,10 +40,20 @@ Open the URL printed by `anna-app dev`. Anna’s SDK, persistent storage, and mo
 
 ## Validation and publication
 
+The Anna Executa is published as a standalone binary for macOS ARM64, macOS x64, Linux x64, and Windows x64. To build those release artifacts, run the **Build RobustNotes Anna Executa binaries** workflow from the repository’s Actions tab. Download the four packages from its GitHub Release into `executas/robustnotes-anna/dist/`; keep the filenames exactly as declared in `executas/robustnotes-anna/executa.json`.
+
+Before creating a new Anna version, validate the app and verify the Linux package on an Anna Cloud Agent. The screenshots and longer About text are synced from `app.json`:
+
 ```powershell
 Set-Location .\robustnotes-anna
 anna-app validate --strict
+anna-app apps sync-meta
 anna-app apps publish
+```
+
+Install the new version from the Anna Developer Console, run the fresh-install flow locally and on a Cloud Agent, then submit it for review only after both pass:
+
+```powershell
 anna-app apps submit-review robustnotes-anna
 ```
 
