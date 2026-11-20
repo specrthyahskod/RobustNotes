@@ -5,7 +5,7 @@ const MAX_STORAGE_BYTES = 200_000;
 const MAX_ITEMS = 50;
 const PAGE = { notebook: { width: 900, height: 1273 }, whiteboard: { width: 1280, height: 900 } };
 const $ = (id) => document.getElementById(id);
-const els = Object.fromEntries(["app", "document-list", "search", "new-document", "export-workspace", "dashboard", "document-view", "canvas-toolbar", "text-toolbar", "page-rail", "page-list", "canvas-viewport", "page-canvas", "canvas-overlays", "text-editor-wrap", "text-editor", "document-crumb", "save-state", "storage-label", "save-dot", "rename-document", "favorite-document", "open-ai", "more-actions", "add-page", "duplicate-page", "clear-page", "undo", "redo", "export-page", "print-notebook", "study-cards", "analyze-text", "canvas-zoom", "zoom-number", "zoom-slider", "zoom-out", "zoom-in", "zoom-fit", "canvas-page-count", "canvas-status", "subtool", "ink-size", "size-label", "custom-color", "image-input", "pdf-input", "open-pdf", "ocr", "text-color", "text-size", "ai-panel", "ai-messages", "ai-input", "send-ai", "close-ai", "open-ai", "voice-input", "toast", "empty-state", "import-workspace"].map((id) => [id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), $(id)]));
+const els = Object.fromEntries(["app", "document-list", "search", "new-document", "export-workspace", "dashboard", "document-view", "canvas-toolbar", "text-toolbar", "page-rail", "page-list", "canvas-viewport", "page-canvas", "canvas-overlays", "text-editor-wrap", "text-editor", "document-crumb", "save-state", "storage-label", "rename-document", "favorite-document", "open-ai", "more-actions", "add-page", "duplicate-page", "clear-page", "undo", "redo", "export-page", "print-notebook", "study-cards", "analyze-text", "canvas-zoom", "zoom-number", "zoom-slider", "zoom-out", "zoom-in", "zoom-fit", "canvas-page-count", "canvas-status", "subtool", "ink-size", "size-label", "custom-color", "image-input", "pdf-input", "open-pdf", "ocr", "text-color", "text-size", "ai-panel", "ai-context", "ai-messages", "ai-input", "send-ai", "close-ai", "voice-input", "toast", "empty-state", "import-workspace"].map((id) => [id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), $(id)]));
 els.saveDot = document.querySelector(".save-dot");
 
 let anna = null;
@@ -22,6 +22,10 @@ let redoStack = [];
 let storageExists = false;
 let storageEtag;
 let saveTimer = 0;
+let saveQueue = Promise.resolve(true);
+let workspaceRevision = 0;
+let savedWorkspaceRevision = 0;
+let indicatorTimer = 0;
 let toastTimer = 0;
 let previewMode = false;
 const pdfPreviewUrls = new Map();
@@ -53,6 +57,19 @@ function createId() { return crypto.randomUUID(); }
 function activeDoc() { return workspace.docs.find((doc) => doc.id === activeDocId) ?? null; }
 function activePage() { return activeDoc()?.pages?.find((page) => page.id === activePageId) ?? null; }
 
+function setCurrentPage(pageId, { resetHistory = false } = {}) {
+  const doc = activeDoc();
+  if (!doc || !doc.pages?.some((page) => page.id === pageId)) return false;
+  activePageId = pageId;
+  doc.activePageId = pageId;
+  workspace.activeDocId = doc.id;
+  workspace.activePageId = pageId;
+  if (resetHistory) { undoStack = []; redoStack = []; selectedItemIds = new Set(); }
+  render();
+  queueSave();
+  return true;
+}
+
 function newPage(type, title) {
   return { id: createId(), title, template: type === "whiteboard" ? "blank" : "dot-grid", items: [], sourceText: "", pdfName: "", pdfPath: "" };
 }
@@ -64,10 +81,13 @@ function newDocument(type) {
   workspace.docs.unshift(doc);
   activeDocId = doc.id;
   activePageId = doc.pages[0]?.id ?? null;
+  doc.activePageId = activePageId;
+  workspace.activeDocId = activeDocId;
+  workspace.activePageId = activePageId;
   filter = "all";
   document.querySelectorAll(".filter-button").forEach((button) => button.classList.toggle("active", button.dataset.filter === "all"));
   render();
-  saveNow();
+  queueSave();
   return doc;
 }
 
@@ -106,6 +126,7 @@ function render() {
   els.documentView.hidden = !doc;
   els.emptyState.hidden = workspace.docs.length > 0;
   renderDocList();
+  updateAiContext();
   if (!doc) return;
   els.documentCrumb.textContent = doc.title;
   els.renameDocument.disabled = false;
@@ -133,54 +154,86 @@ function render() {
 }
 
 function openDocument(id) {
-  flushPendingSave();
+  const doc = workspace.docs.find((item) => item.id === id);
+  if (!doc) return;
   activeDocId = id;
-  const doc = activeDoc();
-  activePageId = doc?.pages?.[0]?.id ?? null;
+  activePageId = doc.pages?.some((page) => page.id === doc.activePageId) ? doc.activePageId : doc.pages?.[0]?.id ?? null;
+  doc.activePageId = activePageId;
+  workspace.activeDocId = activeDocId;
+  workspace.activePageId = activePageId;
   undoStack = [];
   redoStack = [];
   selectedItemIds = new Set();
   render();
+  queueSave();
 }
 
-function serializeWorkspace() { return { version: 2, docs: workspace.docs, revisions: workspace.revisions.slice(-5) }; }
+function serializeWorkspace() {
+  return {
+    version: 2,
+    docs: workspace.docs,
+    revisions: workspace.revisions.slice(-5),
+    activeDocId,
+    activePageId,
+  };
+}
 
 async function saveNow() {
   clearTimeout(saveTimer);
-  const value = serializeWorkspace();
-  if (new TextEncoder().encode(JSON.stringify(value)).length > 200_000) {
-    saveStatus("Storage limit reached", false);
-    toast("Anna app storage is full. Export your workspace backup, then remove old pages or images.");
-    return false;
-  }
-  try {
-    if (anna) {
-      if (storageExists && !storageEtag) throw new Error("Cannot safely update without the workspace ETag. Reload and try again.");
-      const result = await anna.storage.set({ scope: "app", key: STORAGE_KEY, value, ...(storageExists ? { if_match: storageEtag } : {}) });
-      storageExists = true;
-      storageEtag = result?.etag;
-      if (!storageEtag) storageEtag = (await anna.storage.get({ scope: "app", key: STORAGE_KEY }))?.etag;
-    } else {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+  saveTimer = 0;
+  const operation = saveQueue.catch(() => false).then(async () => {
+    // Snapshot at execution time, after earlier ETag writes have completed. This
+    // prevents an older delayed save from overwriting a newer page/navigation.
+    const revision = workspaceRevision;
+    const value = structuredClone(serializeWorkspace());
+    if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_STORAGE_BYTES) {
+      saveStatus("Storage limit reached", false);
+      toast("Anna app storage is full. Export your workspace backup, then remove old pages or images.");
+      return false;
     }
-    saveStatus("All changes saved", true);
-    return true;
-  } catch (error) {
-    saveStatus("Save failed · retry", false);
-    toast(`Could not save: ${error?.message || "storage unavailable"}`);
-    return false;
-  }
+    try {
+      if (anna) {
+        if (storageExists && !storageEtag) throw new Error("Cannot safely update without the workspace ETag. Reload and try again.");
+        const result = await anna.storage.set({ scope: "app", key: STORAGE_KEY, value, ...(storageExists ? { if_match: storageEtag } : {}) });
+        storageExists = true;
+        storageEtag = result?.etag;
+        if (!storageEtag) storageEtag = (await anna.storage.get({ scope: "app", key: STORAGE_KEY }))?.etag;
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+      }
+      savedWorkspaceRevision = Math.max(savedWorkspaceRevision, revision);
+      if (savedWorkspaceRevision === workspaceRevision) saveStatus("All changes saved", true);
+      return true;
+    } catch (error) {
+      saveStatus("Save failed · retry", false);
+      toast(`Could not save: ${error?.message || "storage unavailable"}`);
+      return false;
+    }
+  });
+  saveQueue = operation;
+  const succeeded = await operation;
+  if (succeeded && savedWorkspaceRevision < workspaceRevision) return saveNow();
+  return succeeded;
 }
 
 function queueSave() {
   const doc = activeDoc();
   if (doc) doc.updatedAt = new Date().toISOString();
+  workspaceRevision += 1;
   saveStatus("Saving…", false);
+  clearTimeout(indicatorTimer);
+  indicatorTimer = setTimeout(() => {
+    renderDocList();
+    if (activeDoc()?.type !== "text") renderPages();
+  }, 120);
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, 500);
 }
 
-function flushPendingSave() { if (saveTimer) void saveNow(); }
+function flushPendingSave() {
+  if (saveTimer) return saveNow();
+  return saveQueue;
+}
 
 async function loadWorkspace() {
   try {
@@ -209,11 +262,29 @@ async function loadWorkspace() {
     if (value && value.version === 2 && Array.isArray(value.docs)) {
       workspace.docs = value.docs.filter((doc) => doc && typeof doc.id === "string" && ["notebook", "text", "whiteboard"].includes(doc.type));
       workspace.revisions = Array.isArray(value.revisions) ? value.revisions.slice(-5) : [];
-      if (workspace.docs.length && workspace.docs[0].id) activeDocId = workspace.docs[0].id;
-      activePageId = activeDoc()?.pages?.[0]?.id ?? null;
+      for (const doc of workspace.docs) {
+        if (!Array.isArray(doc.pages)) doc.pages = [];
+        if (!doc.pages.some((page) => page.id === doc.activePageId)) doc.activePageId = doc.pages[0]?.id ?? null;
+      }
+      const storedDocId = typeof value.activeDocId === "string" && workspace.docs.some((doc) => doc.id === value.activeDocId)
+        ? value.activeDocId
+        : workspace.docs[0]?.id ?? null;
+      activeDocId = storedDocId;
+      const doc = activeDoc();
+      const storedPageId = typeof value.activePageId === "string" && doc?.pages?.some((page) => page.id === value.activePageId)
+        ? value.activePageId
+        : doc?.activePageId ?? doc?.pages?.[0]?.id ?? null;
+      activePageId = storedPageId;
+      if (doc) doc.activePageId = activePageId;
+      workspace.activeDocId = activeDocId;
+      workspace.activePageId = activePageId;
       if (anna && migrated) { storageExists = false; storageEtag = undefined; setTimeout(() => void saveNow(), 100); }
     }
     saveStatus("Ready", Boolean(value));
+    if (value) {
+      workspaceRevision = 0;
+      savedWorkspaceRevision = 0;
+    }
   } catch (error) {
     previewMode = !anna;
     saveStatus("Storage unavailable", false);
@@ -392,7 +463,7 @@ function renderPages() {
     const thumb = document.createElement("canvas"); thumb.width = 90; thumb.height = Math.round(90 * pageSize().height / pageSize().width);
     drawThumbnail(thumb, page);
     const label = document.createElement("span"); label.textContent = page.title || `Page ${index + 1}`; button.append(thumb, label);
-    button.addEventListener("click", () => { flushPendingSave(); activePageId = page.id; undoStack = []; redoStack = []; render(); });
+    button.addEventListener("click", () => { setCurrentPage(page.id, { resetHistory: true }); });
     button.addEventListener("dblclick", (event) => { event.preventDefault(); const title = prompt("Rename page", page.title); if (title?.trim()) { page.title = title.trim().slice(0, 80); renderPages(); queueSave(); } });
     button.addEventListener("dragstart", (event) => event.dataTransfer.setData("text/plain", page.id));
     button.addEventListener("dragover", (event) => event.preventDefault());
@@ -634,7 +705,7 @@ async function importPdf(file) {
       page.sourceText = `PDF “${file.name}” was attached for this session only. Anna could not save its PDF file: ${error?.message || "upload failed"}.`;
     }
   } else page.sourceText = `PDF “${file.name}” is open for this session only. Anna preview does not persist imported PDF files.`;
-  doc.pages.push(page); activePageId = page.id; drawPage(); render(); queueSave();
+  doc.pages.push(page); activePageId = page.id; doc.activePageId = page.id; workspace.activePageId = page.id; workspace.activeDocId = doc.id; drawPage(); render(); queueSave();
   toast(page.pdfPath ? "PDF attached to Anna storage. It can be reopened from this notebook." : "PDF preview is attached for this session; it could not be stored in Anna.");
 }
 
@@ -649,12 +720,12 @@ async function openCurrentPdf() {
 
 function addPage() {
   const doc = activeDoc(); if (!doc || doc.type === "text") return;
-  const page = newPage(doc.type, `Page ${doc.pages.length + 1}`); doc.pages.push(page); activePageId = page.id; undoStack = []; redoStack = []; selectedItemIds = new Set(); render(); queueSave();
+  const page = newPage(doc.type, `Page ${doc.pages.length + 1}`); doc.pages.push(page); activePageId = page.id; doc.activePageId = page.id; workspace.activePageId = page.id; workspace.activeDocId = doc.id; undoStack = []; redoStack = []; selectedItemIds = new Set(); render(); queueSave();
 }
 
 function duplicatePage() {
   const doc = activeDoc(); const page = activePage(); if (!doc || !page) return;
-  const copy = structuredClone(page); copy.id = createId(); copy.title += " copy"; copy.items = structuredClone(page.items); doc.pages.splice(doc.pages.indexOf(page) + 1, 0, copy); activePageId = copy.id; selectedItemIds = new Set(); render(); queueSave();
+  const copy = structuredClone(page); copy.id = createId(); copy.title += " copy"; copy.items = structuredClone(page.items); doc.pages.splice(doc.pages.indexOf(page) + 1, 0, copy); activePageId = copy.id; doc.activePageId = copy.id; workspace.activePageId = copy.id; workspace.activeDocId = doc.id; selectedItemIds = new Set(); render(); queueSave();
 }
 
 function clearPage() {
@@ -706,7 +777,7 @@ function restoreRevision() {
   const choice = prompt(`Saved versions:\n${doc.revisions.map((item, i) => `${i + 1}. ${new Date(item.savedAt).toLocaleString()}`).join("\n")}\n\nEnter a version number to restore:`);
   const index = Number(choice) - 1; if (!Number.isInteger(index) || !doc.revisions[index]) return;
   const backup = JSON.stringify({ body: doc.body, pages: doc.pages }); doc.revisions.push({ savedAt: new Date().toISOString(), snapshot: backup });
-  const restored = JSON.parse(doc.revisions[index].snapshot); doc.body = restored.body; doc.pages = restored.pages; activePageId = doc.pages?.[0]?.id ?? null; render(); queueSave();
+  const restored = JSON.parse(doc.revisions[index].snapshot); doc.body = restored.body; doc.pages = restored.pages; activePageId = doc.pages?.some((page) => page.id === doc.activePageId) ? doc.activePageId : doc.pages?.[0]?.id ?? null; doc.activePageId = activePageId; workspace.activePageId = activePageId; render(); queueSave();
 }
 
 function moreMenu() {
@@ -719,18 +790,18 @@ function moreMenu() {
   if (action === "focus") toggleFocus();
   if (action === "calculator") calculator();
   if (action === "music") openMusic();
-  if (action === "study cards") { openAi(); void askAi("", "cards"); }
+  if (action === "study cards") { showAi(); void askAi("", "cards", { heading: "Study cards" }); }
   if (action === "import backup") els.importWorkspace.click();
 }
 
 function duplicateDocument() {
   const doc = activeDoc(); if (!doc) return;
-  const copy = structuredClone(doc); copy.id = createId(); copy.title = `${doc.title} copy`; copy.createdAt = new Date().toISOString(); copy.updatedAt = copy.createdAt; workspace.docs.unshift(copy); activeDocId = copy.id; activePageId = copy.pages?.[0]?.id ?? null; render(); queueSave();
+  const copy = structuredClone(doc); copy.id = createId(); copy.title = `${doc.title} copy`; copy.createdAt = new Date().toISOString(); copy.updatedAt = copy.createdAt; workspace.docs.unshift(copy); activeDocId = copy.id; activePageId = copy.pages?.[0]?.id ?? null; copy.activePageId = activePageId; workspace.activeDocId = activeDocId; workspace.activePageId = activePageId; render(); queueSave();
 }
 
 function deleteDocument() {
   const doc = activeDoc(); if (!doc || !confirm(`Delete “${doc.title}” and its pages?`)) return;
-  workspace.docs = workspace.docs.filter((item) => item.id !== doc.id); activeDocId = workspace.docs[0]?.id ?? null; activePageId = activeDoc()?.pages?.[0]?.id ?? null; render(); queueSave();
+  workspace.docs = workspace.docs.filter((item) => item.id !== doc.id); activeDocId = workspace.docs[0]?.id ?? null; activePageId = activeDoc()?.activePageId ?? activeDoc()?.pages?.[0]?.id ?? null; workspace.activeDocId = activeDocId; workspace.activePageId = activePageId; render(); queueSave();
 }
 
 function toggleFocus() { document.body.classList.toggle("focus-mode"); }
@@ -842,17 +913,19 @@ async function importWorkspace(file) {
     } else imported = parsed.workspace ?? parsed;
     if (!Array.isArray(imported.docs)) throw new Error("This file does not contain a RobustNotes workspace.");
     if (!confirm(`Import ${imported.docs.length} workspace item(s)? This replaces the current Anna workspace.`)) return;
-    workspace = { version: 2, docs: imported.docs, revisions: imported.revisions || [] }; activeDocId = workspace.docs[0]?.id ?? null; activePageId = activeDoc()?.pages?.[0]?.id ?? null; render(); await saveNow(); toast("Workspace imported");
+    workspace = { version: 2, docs: imported.docs, revisions: imported.revisions || [] }; activeDocId = workspace.docs[0]?.id ?? null; activePageId = activeDoc()?.activePageId ?? activeDoc()?.pages?.[0]?.id ?? null; workspace.activeDocId = activeDocId; workspace.activePageId = activePageId; render(); queueSave(); await saveNow(); toast("Workspace imported");
   } catch (error) { toast(`Could not import backup: ${error?.message || "invalid file/password"}`); }
 }
 
 function formatText(format) { document.execCommand(format, false); els.textEditor.focus(); }
 
+function showAi() { els.aiPanel.hidden = false; updateAiContext(); }
+function showAi() { els.aiPanel.hidden = false; updateAiContext(); }
 function openAi() { els.aiPanel.hidden = !els.aiPanel.hidden; updateAiContext(); }
 
 function updateAiContext() {
   const doc = activeDoc(); const page = activePage();
-  els.aiContext.textContent = doc ? `${doc.title}${page ? ` · ${page.title}` : ""}` : "Workspace assistant";
+  els.aiContext.textContent = doc ? `${doc.title}${page ? ` · ${page.title} · whole note available` : " · whole note"}` : "Workspace assistant";
 }
 
 function canvasDataUrl() {
@@ -860,34 +933,132 @@ function canvasDataUrl() {
   drawPage(); return els.pageCanvas.toDataURL("image/jpeg", .72);
 }
 
-function appendAiMessage(role, text) { const item = document.createElement("div"); item.className = `ai-message ${role}`; item.textContent = text; els.aiMessages.append(item); els.aiMessages.scrollTop = els.aiMessages.scrollHeight; }
+function appendAiMessage(role, text, actions = []) {
+  const item = document.createElement("div"); item.className = `ai-message ${role}`;
+  const content = document.createElement("div"); content.textContent = text; item.append(content);
+  if (actions.length) {
+    const row = document.createElement("div"); row.className = "ai-result-actions";
+    for (const action of actions) {
+      const button = document.createElement("button"); button.type = "button"; button.textContent = action.label;
+      if (action.primary) button.classList.add("primary");
+      button.addEventListener("click", action.run); row.append(button);
+    }
+    item.append(row);
+  }
+  els.aiMessages.append(item); els.aiMessages.scrollTop = els.aiMessages.scrollHeight;
+}
 
-async function askAi(question, mode = "chat") {
+function contextForDocument(doc, currentPageId) {
+  if (doc.type === "text") return doc.body || "";
+  return (doc.pages || []).map((page, index) => {
+    const pageText = page.items?.filter((entry) => entry.type === "text").map((entry) => entry.text).join("\n") || "";
+    const savedText = [page.sourceText, pageText].filter(Boolean).join("\n");
+    return `Page ${index + 1}${page.id === currentPageId ? " (current page)" : ""} · ${page.title || "Untitled"}\n${savedText || "(no searchable text)"}`;
+  }).join("\n\n");
+}
+
+function addAiDraft(docId, pageId, text, heading) {
+  const doc = workspace.docs.find((entry) => entry.id === docId);
+  if (!doc) { toast("The original note is no longer in this workspace."); return; }
+  const draft = String(text).trim();
+  if (!draft) return;
+  if (doc.type === "text") {
+    const oldBody = doc.body || "";
+    const oldHtml = sanitizeRichHtml(doc.bodyHtml || escapeHtml(oldBody).replace(/\n/g, "<br>"));
+    doc.body = `${oldBody.trimEnd()}${oldBody.trim() ? "\n\n" : ""}${heading}\n${draft}`;
+    const paragraphs = draft.split(/\r?\n/).map((line) => `<p>${line ? escapeHtml(line) : "<br>"}</p>`).join("");
+    doc.bodyHtml = `${oldHtml}${oldHtml ? "<br>" : ""}<p><strong>${escapeHtml(heading)}</strong></p>${paragraphs}`;
+    if (activeDocId === docId) {
+      els.textEditor.innerHTML = sanitizeRichHtml(doc.bodyHtml);
+      doc.body = els.textEditor.innerText;
+    }
+  } else {
+    const page = doc.pages?.find((entry) => entry.id === pageId);
+    if (!page) { toast("The original page is no longer available."); return; }
+    const size = PAGE[doc.type] ?? PAGE.notebook;
+    const item = { id: createId(), type: "text", x: 48, y: Math.min(size.height - 180, 60 + page.items.length * 18), w: size.width - 96, h: 150, text: `${heading}\n${draft}`, color: "#18364a", size: 17 };
+    if (activeDocId === docId && activePageId === pageId) makePageSnapshot();
+    page.items.push(item);
+    if (activeDocId === docId && activePageId === pageId) { drawPage(); drawOverlays(); }
+  }
+  doc.updatedAt = new Date().toISOString();
+  queueSave();
+  toast(`AI draft added to “${doc.title}”. Review and edit it in the note.`);
+}
+
+function replaceEditorSelection(docId, range, text) {
+  if (activeDocId !== docId || !range?.startContainer?.isConnected || !els.textEditor.contains(range.startContainer)) {
+    toast("Reopen the same text note and select the passage again to replace it."); return;
+  }
+  els.textEditor.focus();
+  const selection = window.getSelection();
+  selection.removeAllRanges(); selection.addRange(range);
+  document.execCommand("insertText", false, text);
+  const doc = activeDoc();
+  if (doc) { doc.body = els.textEditor.innerText; doc.bodyHtml = sanitizeRichHtml(els.textEditor.innerHTML); queueSave(); }
+}
+
+function runAiAction(action) {
+  const doc = activeDoc();
+  if (!doc) { toast("Open a note or page first."); return; }
+  const selection = window.getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  const selectedText = range && els.textEditor.contains(range.commonAncestorContainer) ? selection.toString().trim() : "";
+  const selectionRange = selectedText ? range.cloneRange() : null;
+  const prompts = {
+    summarize: ["Summarize these notes into a clear, accurate set of concise takeaways. Use only information present in the notes and preserve important names, dates, and numbers.", "Summary"],
+    outline: ["Turn these notes into a well-structured outline with concise headings and nested bullets. Keep the original meaning and do not invent details.", "Outline"],
+    "action-items": ["Extract concrete action items from these notes. Return a checklist, include an owner or date only when the notes specify one, and say when there are no explicit tasks.", "Action items"],
+    "key-points": ["Identify the key concepts, facts, and relationships in these notes. Use concise bullets and flag any uncertainty rather than guessing.", "Key points"],
+    polish: [selectedText ? `Rewrite the selected passage for clarity and flow while preserving its meaning. Return only the revised passage.\n\nSelected passage:\n${selectedText}` : "Improve the clarity and flow of this note while preserving its meaning. Return a clean revised draft and do not add facts.", "Edited draft"],
+  };
+  const config = prompts[action];
+  if (!config) return;
+  showAi();
+  void askAi(config[0], action, { heading: config[1], selectionRange });
+}
+
+async function askAi(question, mode = "chat", options = {}) {
   if (!anna) { toast("AI is available when this workspace is running inside Anna."); return; }
   const doc = activeDoc(); if (!doc) { toast("Open a note or page first."); return; }
   const page = activePage();
-  const context = doc.type === "text" ? doc.body : `${page?.sourceText || ""}\n${page?.items?.filter((item) => item.type === "text").map((item) => item.text).join("\n") || ""}`;
-  let promptText = question;
-  if (mode === "ocr") promptText = "Transcribe the visible handwriting accurately. Return only the transcription, preserving line breaks. Mark uncertain words as [unclear].";
-  if (mode === "cards") promptText = `Create five concise question-and-answer study cards from this page. Format each as Q: ... A: ...\n${context || question}`;
-  appendAiMessage("user", mode === "ocr" ? "Recognize handwriting on this page" : question);
-  const content = [{ type: "text", text: `${promptText}\n\nNotebook context:\n${context.slice(0, 12000) || "(no extracted text; use the page image if present)"}` }];
+  const targetDocId = doc.id; const targetPageId = page?.id ?? null;
+  const selectedIds = new Set(selectedItemIds);
+  const context = contextForDocument(doc, targetPageId).slice(0, 12000);
+  const modePrompts = {
+    ocr: "Transcribe the visible handwriting accurately. Return only the transcription, preserve line breaks, and mark uncertain words as [unclear].",
+    cards: "Create five concise question-and-answer study cards from these notes. Format each as Q: ... A: ...",
+    summarize: question,
+    outline: question,
+    "action-items": question,
+    "key-points": question,
+    polish: question,
+  };
+  const promptText = modePrompts[mode] ?? question;
+  const userLabel = mode === "ocr" ? "Recognize handwriting on this page" : question || `Create ${options.heading || "a study draft"} from this note`;
+  appendAiMessage("user", userLabel);
+  const content = [{ type: "text", text: `${promptText}\n\nNotebook context:\n${context || "(no extracted text; use the page image if present)"}` }];
   const imageData = doc.type !== "text" ? canvasDataUrl() : null;
   if (imageData) { const [header, data] = imageData.split(","); content.push({ type: "image", data, mimeType: header.match(/data:(.*?);/)?.[1] || "image/jpeg" }); }
   try {
     const result = await anna.llm.complete({ messages: [{ role: "user", content }] });
-    const text = result?.content?.text ?? result?.text ?? result?.choices?.[0]?.message?.content ?? "No response text was returned.";
-    appendAiMessage("assistant", String(text));
+    const text = String(result?.content?.text ?? result?.text ?? result?.choices?.[0]?.message?.content ?? "No response text was returned.");
+    const actions = [];
+    if (mode !== "ocr" && text.trim()) {
+      actions.push({ label: doc.type === "text" ? "Add draft to note" : "Add draft to page", primary: true, run: () => addAiDraft(targetDocId, targetPageId, text, options.heading || "AI note") });
+      if (options.selectionRange) actions.push({ label: "Replace selected text", run: () => replaceEditorSelection(targetDocId, options.selectionRange, text.trim()) });
+    }
+    appendAiMessage("assistant", text, actions);
     if (mode === "ocr" && page) {
-      const transcript = String(text).trim();
-      const selected = page.items.filter((item) => selectedItemIds.has(item.id) && item.type === "stroke");
+      const transcript = text.trim();
+      const selected = page.items.filter((item) => selectedIds.has(item.id) && item.type === "stroke");
       if (selected.length && confirm("Replace the selected handwriting with editable cursive text? Choose Cancel to keep the ink and save only the transcription.")) {
         const bounds = selected.map(itemBounds).filter(Boolean);
         const x = Math.min(...bounds.map((bound) => bound.x)); const y = Math.min(...bounds.map((bound) => bound.y));
         const width = Math.max(260, Math.max(...bounds.map((bound) => bound.x + bound.w)) - x);
-        page.items = page.items.filter((item) => !selectedItemIds.has(item.id));
+        page.items = page.items.filter((item) => !selectedIds.has(item.id));
         page.items.push({ id: createId(), type: "text", style: "cursive", x, y, w: width, h: 72, text: transcript, color: inkColor, size: 22 });
-        selectedItemIds = new Set(); drawPage(); drawOverlays();
+        if (activeDocId === targetDocId && activePageId === targetPageId) { selectedItemIds = new Set(); drawPage(); drawOverlays(); }
       }
       page.sourceText = transcript; queueSave(); toast("OCR text saved for search and review. Verify the transcription.");
     }
@@ -931,8 +1102,12 @@ els.openPdf.addEventListener("click", () => void openCurrentPdf());
 els.clearPage.addEventListener("click", clearPage);
 els.undo.addEventListener("click", undo); els.redo.addEventListener("click", redo);
 els.exportPage.addEventListener("click", exportPage); els.printNotebook.addEventListener("click", printNotebook);
-els.studyCards.addEventListener("click", () => { openAi(); void askAi("", "cards"); });
+els.studyCards.addEventListener("click", () => { showAi(); void askAi("", "cards", { heading: "Study cards" }); });
 els.analyzeText.addEventListener("click", () => void analyzeText());
+document.querySelectorAll("[data-ai-action]").forEach((button) => {
+  if (button.dataset.aiAction === "polish") button.addEventListener("mousedown", (event) => event.preventDefault());
+  button.addEventListener("click", () => runAiAction(button.dataset.aiAction));
+});
 els.canvasZoom.addEventListener("click", fitCanvas); els.zoomFit.addEventListener("click", fitCanvas);
 els.zoomNumber.addEventListener("change", () => setZoom(els.zoomNumber.value)); els.zoomNumber.addEventListener("keydown", (event) => { if (event.key === "Enter") { setZoom(els.zoomNumber.value); els.zoomNumber.blur(); } });
 els.zoomSlider.addEventListener("input", () => setZoom(els.zoomSlider.value));

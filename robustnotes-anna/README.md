@@ -10,6 +10,8 @@ The Anna edition is a responsive web workspace built separately from the RobustN
 - **Text and images:** editable text boxes on the canvas, rich text in text files, per-text color/size, image insertion from a file or clipboard, PNG export, and browser print-to-PDF for notebook pages.
 - **PDF attachments:** add a PDF to a notebook and reopen it from Anna storage. Canvas annotations are saved as page ink.
 - **AI and study:** optional RobustNotes AI sidebar uses Anna’s selected model for page-aware questions, handwriting OCR, and study-card drafts. OCR offers to replace selected handwriting with editable cursive-style text. A bundled deterministic tool reports word count, read time, and Markdown headings.
+- **AI inside the writing workflow:** one-click actions summarize a note/page, build an outline, extract action items or key points, and polish selected text. Each AI draft can be inserted directly into the open text note or as an editable text object on the canvas. Context includes searchable text from every page in the current note plus an image of the active canvas page when relevant.
+- **Reliable page continuity:** page/document navigation is saved with workspace content. Saves are serialized against Anna storage ETags, so fast edits and page switches cannot race each other and restore an older snapshot. Page thumbnails and recent-work snippets refresh after changes.
 - **Voice input:** browser speech-to-text where supported.
 - **Backup and recovery:** JSON workspace export/import, optional AES-GCM password encryption, and a small rolling set of manual document revisions.
 - **Convenience:** keyboard shortcuts, quick calculator, ruler/scale, compass, and local audio playback with queue controls.
