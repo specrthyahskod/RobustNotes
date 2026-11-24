@@ -1,7 +1,7 @@
 {
   "name": "RobustNotes",
   "slug": "robustnotes-anna",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "tagline": "Notebooks, whiteboards, and text in one studio",
   "description": "RobustNotes brings handwritten notes, visual planning, and focused writing together in one workspace. Create notebooks with ruled, dot-grid, Cornell, meeting, and planner pages; draw with a stylus, annotate with shapes and a lasso, add text boxes and images, and keep work organized with search, tags, favorites, and page tools. Make whiteboards for diagrams and brainstorming, or write in rich-text and code files with formatting and reading insights.\n\nRobustNotes AI is built into the note workflow: summarize a note or page, create an outline, extract action items and key points, polish selected writing, recognize handwriting, and turn notes into study cards. AI drafts can be inserted directly into text notes or canvas pages, then edited like regular note content. Questions can use text from the whole note and a snapshot of the current canvas page.\n\nWorkspace changes and current document/page navigation are saved together, so reopening a notebook returns to the page you last used. Notes are stored in private Anna app storage; export or password-encrypt a workspace backup whenever you need one. Voice input is available in supported browsers.\n\nRobustNotes is designed for both desktop and mobile layouts. PDF files can be attached for reference, while browser printing exports notebook pages to PDF. AI and OCR send the selected text or page image to Anna’s chosen model only when you start a request.",
   "screenshots": [

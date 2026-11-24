@@ -1,5 +1,3 @@
-import { AnnaAppRuntime } from "/static/anna-apps/_sdk/latest/index.js";
-
 const STORAGE_KEY = "robustnotes:studio:v2";
 const MAX_STORAGE_BYTES = 200_000;
 const MAX_ITEMS = 50;
@@ -21,6 +19,7 @@ let undoStack = [];
 let redoStack = [];
 let storageExists = false;
 let storageEtag;
+let storageEtagMode = "unknown";
 let saveTimer = 0;
 let saveQueue = Promise.resolve(true);
 let workspaceRevision = 0;
@@ -28,6 +27,8 @@ let savedWorkspaceRevision = 0;
 let indicatorTimer = 0;
 let toastTimer = 0;
 let previewMode = false;
+let startupReady = false;
+let localEditsDuringStartup = false;
 const pdfPreviewUrls = new Map();
 let musicUrl = null;
 let musicQueue = [];
@@ -51,6 +52,21 @@ function saveStatus(message, saved = false) {
   els.saveState.textContent = message;
   els.storageLabel.textContent = previewMode ? "Browser preview · not synced" : "Private Anna account storage";
   els.saveDot.classList.toggle("saved", saved);
+}
+
+function withTimeout(promise, milliseconds, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), milliseconds);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+function storageHasValue(result) {
+  if (typeof result?.exists === "boolean") return result.exists;
+  return Boolean(result && Object.prototype.hasOwnProperty.call(result, "value"));
 }
 
 function createId() { return crypto.randomUUID(); }
@@ -87,6 +103,7 @@ function newDocument(type) {
   filter = "all";
   document.querySelectorAll(".filter-button").forEach((button) => button.classList.toggle("active", button.dataset.filter === "all"));
   render();
+  if (type !== "text") setTimeout(fitCanvas, 40);
   queueSave();
   return doc;
 }
@@ -122,9 +139,12 @@ function renderDocList() {
 
 function render() {
   const doc = activeDoc();
-  els.dashboard.hidden = Boolean(doc);
+  // Show an actionable landing screen immediately while Anna connects. The
+  // previous logic exposed both the dashboard and empty-state for an empty
+  // workspace, and exposed neither until the async startup finished.
+  els.dashboard.hidden = Boolean(doc) || workspace.docs.length === 0;
   els.documentView.hidden = !doc;
-  els.emptyState.hidden = workspace.docs.length > 0;
+  els.emptyState.hidden = Boolean(doc) || workspace.docs.length > 0;
   renderDocList();
   updateAiContext();
   if (!doc) return;
@@ -165,6 +185,7 @@ function openDocument(id) {
   redoStack = [];
   selectedItemIds = new Set();
   render();
+  if (doc.type !== "text") setTimeout(fitCanvas, 40);
   queueSave();
 }
 
@@ -193,11 +214,18 @@ async function saveNow() {
     }
     try {
       if (anna) {
-        if (storageExists && !storageEtag) throw new Error("Cannot safely update without the workspace ETag. Reload and try again.");
-        const result = await anna.storage.set({ scope: "app", key: STORAGE_KEY, value, ...(storageExists ? { if_match: storageEtag } : {}) });
+        if (storageExists && !storageEtag && storageEtagMode !== "unsupported") {
+          throw new Error("Cannot safely update without the workspace ETag. Reload and try again.");
+        }
+        const result = await anna.storage.set({ scope: "app", key: STORAGE_KEY, value, ...(storageExists && storageEtag ? { if_match: storageEtag } : {}) });
         storageExists = true;
         storageEtag = result?.etag;
-        if (!storageEtag) storageEtag = (await anna.storage.get({ scope: "app", key: STORAGE_KEY }))?.etag;
+        if (storageEtag) storageEtagMode = "supported";
+        else {
+          const latest = await anna.storage.get({ scope: "app", key: STORAGE_KEY });
+          storageEtag = latest?.etag;
+          storageEtagMode = storageEtag ? "supported" : "unsupported";
+        }
       } else {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
       }
@@ -217,6 +245,7 @@ async function saveNow() {
 }
 
 function queueSave() {
+  if (!startupReady) localEditsDuringStartup = true;
   const doc = activeDoc();
   if (doc) doc.updatedAt = new Date().toISOString();
   workspaceRevision += 1;
@@ -236,21 +265,25 @@ function flushPendingSave() {
 }
 
 async function loadWorkspace() {
+  // If someone starts creating notes while the runtime is connecting, merge
+  // those local edits with the account workspace instead of replacing them.
+  const startupDraft = localEditsDuringStartup ? structuredClone(serializeWorkspace()) : null;
   try {
     let value;
     let migrated = false;
     if (anna) {
-      const result = await anna.storage.get({ scope: "app", key: STORAGE_KEY });
-      storageExists = result?.exists === true;
+      const result = await withTimeout(anna.storage.get({ scope: "app", key: STORAGE_KEY }), 10000, "Workspace storage read");
+      storageExists = storageHasValue(result);
       storageEtag = result?.etag;
+      storageEtagMode = storageEtag ? "supported" : storageExists ? "unsupported" : "unknown";
       value = storageExists ? result.value : null;
     } else {
       previewMode = true;
       value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
     }
     if (!value && anna) {
-      const legacy = await anna.storage.get({ scope: "app", key: "robustnotes:workspace:v1" });
-      if (legacy?.exists) {
+      const legacy = await withTimeout(anna.storage.get({ scope: "app", key: "robustnotes:workspace:v1" }), 10000, "Legacy workspace read");
+      if (storageHasValue(legacy)) {
         const old = typeof legacy.value === "string" ? JSON.parse(legacy.value) : legacy.value;
         if (Array.isArray(old?.notes)) {
           value = { version: 2, docs: old.notes.map((note) => ({ id: note.id || createId(), type: "text", title: note.title || "Untitled note", body: note.body || "", bodyHtml: "", createdAt: note.createdAt || new Date().toISOString(), updatedAt: note.updatedAt || new Date().toISOString(), favorite: false, tags: [], folder: "", pages: [], revisions: [] })), revisions: [] };
@@ -260,19 +293,24 @@ async function loadWorkspace() {
       }
     }
     if (value && value.version === 2 && Array.isArray(value.docs)) {
-      workspace.docs = value.docs.filter((doc) => doc && typeof doc.id === "string" && ["notebook", "text", "whiteboard"].includes(doc.type));
+      const remoteDocs = value.docs.filter((doc) => doc && typeof doc.id === "string" && ["notebook", "text", "whiteboard"].includes(doc.type));
+      const mergedDocs = new Map(remoteDocs.map((doc) => [doc.id, doc]));
+      for (const doc of startupDraft?.docs ?? []) mergedDocs.set(doc.id, doc);
+      workspace.docs = [...mergedDocs.values()];
       workspace.revisions = Array.isArray(value.revisions) ? value.revisions.slice(-5) : [];
       for (const doc of workspace.docs) {
         if (!Array.isArray(doc.pages)) doc.pages = [];
         if (!doc.pages.some((page) => page.id === doc.activePageId)) doc.activePageId = doc.pages[0]?.id ?? null;
       }
-      const storedDocId = typeof value.activeDocId === "string" && workspace.docs.some((doc) => doc.id === value.activeDocId)
-        ? value.activeDocId
+      const preferredDocId = startupDraft?.activeDocId ?? value.activeDocId;
+      const storedDocId = typeof preferredDocId === "string" && workspace.docs.some((doc) => doc.id === preferredDocId)
+        ? preferredDocId
         : workspace.docs[0]?.id ?? null;
       activeDocId = storedDocId;
       const doc = activeDoc();
-      const storedPageId = typeof value.activePageId === "string" && doc?.pages?.some((page) => page.id === value.activePageId)
-        ? value.activePageId
+      const preferredPageId = startupDraft?.activeDocId === storedDocId ? startupDraft.activePageId : value.activePageId;
+      const storedPageId = typeof preferredPageId === "string" && doc?.pages?.some((page) => page.id === preferredPageId)
+        ? preferredPageId
         : doc?.activePageId ?? doc?.pages?.[0]?.id ?? null;
       activePageId = storedPageId;
       if (doc) doc.activePageId = activePageId;
@@ -280,15 +318,34 @@ async function loadWorkspace() {
       workspace.activePageId = activePageId;
       if (anna && migrated) { storageExists = false; storageEtag = undefined; setTimeout(() => void saveNow(), 100); }
     }
-    saveStatus("Ready", Boolean(value));
+    if (startupDraft && !value) {
+      workspace = { ...workspace, docs: startupDraft.docs, revisions: startupDraft.revisions ?? [] };
+      activeDocId = startupDraft.activeDocId;
+      activePageId = startupDraft.activePageId;
+      workspace.activeDocId = activeDocId;
+      workspace.activePageId = activePageId;
+    }
+    startupReady = true;
+    saveStatus(previewMode ? "Preview ready" : "Ready", Boolean(value));
     if (value) {
       workspaceRevision = 0;
       savedWorkspaceRevision = 0;
     }
+    if (startupDraft) queueSave();
   } catch (error) {
+    startupReady = true;
     previewMode = !anna;
-    saveStatus("Storage unavailable", false);
+    saveStatus(anna ? "Anna storage unavailable" : "Preview ready", false);
     toast(`Could not load workspace: ${error?.message || "request failed"}`);
+    // A failed connection/storage read must never leave the main interface
+    // hidden behind an indefinite Connecting state.
+    if (startupDraft) {
+      workspace = { ...workspace, docs: startupDraft.docs, revisions: startupDraft.revisions ?? [] };
+      activeDocId = startupDraft.activeDocId;
+      activePageId = startupDraft.activePageId;
+      workspace.activeDocId = activeDocId;
+      workspace.activePageId = activePageId;
+    }
   }
   render();
 }
@@ -920,7 +977,6 @@ async function importWorkspace(file) {
 function formatText(format) { document.execCommand(format, false); els.textEditor.focus(); }
 
 function showAi() { els.aiPanel.hidden = false; updateAiContext(); }
-function showAi() { els.aiPanel.hidden = false; updateAiContext(); }
 function openAi() { els.aiPanel.hidden = !els.aiPanel.hidden; updateAiContext(); }
 
 function updateAiContext() {
@@ -1157,8 +1213,32 @@ document.addEventListener("keydown", (event) => {
 
 window.addEventListener("resize", () => { if (activeDoc()?.type !== "text" && !els.documentView.hidden) setZoom(zoom); });
 
-try { anna = await AnnaAppRuntime.connect(); await anna.window.set_title({ title: "RobustNotes Studio" }); }
-catch { previewMode = true; }
-await loadWorkspace();
-setTool("pen");
-if (activeDoc() && activeDoc().type !== "text") { setZoom(84); setTimeout(fitCanvas, 40); }
+async function initializeApp() {
+  // Paint the usable workspace before making any host calls. Anna's SDK and
+  // storage can be temporarily slow during sign-in; they must not gate UI setup.
+  render();
+  setTool("pen");
+  saveStatus("Connecting to Anna…", false);
+  try {
+    const runtimeModule = await withTimeout(import("/static/anna-apps/_sdk/latest/index.js"), 10000, "Anna runtime load");
+    anna = await withTimeout(runtimeModule.AnnaAppRuntime.connect(), 10000, "Anna runtime connection");
+    previewMode = false;
+    void Promise.resolve().then(() => anna.window.set_title({ title: "RobustNotes Studio" })).catch(() => {});
+  } catch (error) {
+    anna = null;
+    previewMode = true;
+    saveStatus("Offline preview", false);
+    toast(`Anna connection unavailable. Opening a browser preview${error?.message ? `: ${error.message}` : "."}`);
+  }
+  saveStatus(anna ? "Loading your Anna workspace…" : "Loading browser preview…", false);
+  await loadWorkspace();
+  if (activeDoc() && activeDoc().type !== "text") { setZoom(84); setTimeout(fitCanvas, 40); }
+}
+
+void initializeApp().catch((error) => {
+  startupReady = true;
+  previewMode = !anna;
+  saveStatus("Workspace ready · storage needs attention", false);
+  toast(`Workspace startup recovered: ${error?.message || "unexpected error"}`);
+  render();
+});
